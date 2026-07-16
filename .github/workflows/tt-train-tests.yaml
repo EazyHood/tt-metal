@@ -64,6 +64,14 @@ on:
           tests yaml. Verified during load-test-matrix via verify_time_budget.py.
           Empty skips the per-test ceiling check.
 
+# Restrict the token to the minimum this workflow needs (checkout + pulling the
+# container image + artifact up/download). Without this, the reusable workflow
+# inherits the caller's scopes (e.g. merge-gate grants contents/pull-requests/
+# checks write), which none of these jobs require.
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   load-test-matrix:
     runs-on: ubuntu-slim
@@ -200,6 +208,27 @@ jobs:
             --backend sysfs \
             --out /work/power_report.json \
             -- bash -c '${{ matrix.test-group.cmd }}'
+
+      - name: Upload loss plot
+        id: upload-loss-plot
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          # run_models.py prefixes each plot with the model + card, so the file
+          # basename is unique across matrix jobs. With archive:false the artifact
+          # name is derived from that (unique) basename, avoiding collisions while
+          # keeping the PNG directly viewable (not zipped).
+          name: loss-plot-${{ matrix.test-group.name }}-${{ matrix.test-group.sku }}
+          path: /work/generated/tt-train-metrics/plots/*losses.png
+          if-no-files-found: warn
+          retention-days: 30
+          archive: false
+
+      - name: Add loss plot to summary
+        if: ${{ !cancelled() && steps.upload-loss-plot.outputs.artifact-url != '' }}
+        run: |
+          cat /work/generated/tt-train-metrics/plots/*losses.md >> $GITHUB_STEP_SUMMARY
+          echo "[Download full loss plot image](${{ steps.upload-loss-plot.outputs.artifact-url }})" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload power report
         if: ${{ !cancelled() }}

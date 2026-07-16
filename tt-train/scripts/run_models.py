@@ -23,6 +23,7 @@ import yaml
 import tt_train_metrics
 import analyze_memory
 import analyze_steps
+import plot_training_comparison
 from model_tracer.generic_ops_tracer import get_machine_info
 
 
@@ -306,6 +307,27 @@ def main() -> int:
         tt_train_metrics.write_json(pydantic_data, output_filename)
 
         set_model_status(filename=model_filename, status="✅", elapsed_time=elapsed_time, log_path=str(log_path))
+
+        # Generate plots. Files are prefixed with the model + card (below), so a
+        # per-model subdirectory is unnecessary; all plots live directly in plots/.
+        plot_dir = output_dir / "plots"
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Plot directory: {plot_dir}")
+        # Prefix output filenames with the model + card so artifact basenames stay
+        # unique across CI matrix jobs (upload-artifact with archive:false uses the
+        # file's basename as the artifact name, which must be unique per run).
+        file_prefix = f"{model_filename}_{card_type}_"
+        plot_training_comparison.main(
+            [
+                "--baseline",
+                str(log_path),
+                "--output-dir",
+                str(plot_dir),
+                "--mermaid",
+                "--file-prefix",
+                file_prefix,
+            ]
+        )
 
     # Show summary and display to Github if environment variable exists
     df = pd.DataFrame(model_status)

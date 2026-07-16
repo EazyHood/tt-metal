@@ -17,12 +17,16 @@ Usage:
     python plot_training_comparison.py --baseline run_baseline.txt --compare run_optimized.txt run_fused.txt \\
         --labels baseline optimized fused --output-dir ./plots
 
+    python plot_training_comparison.py --baseline run_baseline.txt --compare run_optimized.txt \\
+        --no-plots --mermaid --output-dir ./plots
+
 Expected log format:
     Step lines from nano_gpt (C++) or train_nanogpt.py (Python), e.g.:
         "Step: 1, Loss: 11.0234375, Time: 703.14 ms, ..."
 """
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -105,6 +109,7 @@ def plot_loss_comparison(
     output_path: Path,
     title_prefix: str = "",
     max_steps: Optional[int] = None,
+    file_prefix: str = "",
 ) -> None:
     """Plot loss curves for all runs."""
     plt.figure(figsize=(20, 10))
@@ -123,7 +128,7 @@ def plot_loss_comparison(
     plt.grid(True)
     plt.tick_params(axis="both", which="major", labelsize=14)
 
-    output_file = output_path / "losses.png"
+    output_file = output_path / f"{file_prefix}losses.png"
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {output_file}")
@@ -135,6 +140,7 @@ def plot_loss_difference(
     output_path: Path,
     title_prefix: str = "",
     max_steps: Optional[int] = None,
+    file_prefix: str = "",
 ) -> None:
     """Plot loss differences relative to baseline."""
     if baseline_name not in all_data:
@@ -170,7 +176,7 @@ def plot_loss_difference(
     plt.grid(True)
     plt.tick_params(axis="both", which="major", labelsize=14)
 
-    output_file = output_path / "losses_diff.png"
+    output_file = output_path / f"{file_prefix}losses_diff.png"
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {output_file}")
@@ -180,6 +186,7 @@ def plot_step_time(
     all_data: Dict[str, Dict[str, List[float]]],
     output_path: Path,
     title_prefix: str = "",
+    file_prefix: str = "",
 ) -> None:
     """Plot step time comparison."""
     plt.figure(figsize=(20, 10))
@@ -198,13 +205,235 @@ def plot_step_time(
     plt.grid(True)
     plt.tick_params(axis="both", which="major", labelsize=14)
 
-    output_file = output_path / "step_time.png"
+    output_file = output_path / f"{file_prefix}step_time.png"
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {output_file}")
 
 
-def main():
+def _downsample(values: List[float], max_points: int) -> Tuple[List[int], List[float]]:
+    """
+    Downsample a series to at most evenly spaced points, `max_points`.
+
+    Mermaid charts are rendered using SVG elements, so handling a large number of data points can lead to poor performance.
+
+    Returns:
+        Tuple of (x_indices, y_values) for the sampled points.
+    """
+    n = len(values)
+    if n == 0:
+        return [], []
+    if n <= max_points:
+        indices = list(range(n))
+    else:
+        # np.linspace includes both endpoints; unique() drops duplicates from rounding
+        indices = sorted(set(int(round(i)) for i in np.linspace(0, n - 1, max_points)))
+    return indices, [values[i] for i in indices]
+
+
+# Legend palette: (emoji swatch, hex color). The hex values are pinned into
+# Mermaid's plotColorPalette so line N always uses color N, and the emoji is
+# chosen to visually match that hex. Emoji render everywhere (including
+# $GITHUB_STEP_SUMMARY), unlike GitHub's `#hex` color chips.
+_LEGEND_PALETTE: List[Tuple[str, str]] = [
+    ("🟦", "#3b88c3"),
+    ("🟧", "#f4900c"),
+    ("🟩", "#78b159"),
+    ("🟥", "#dd2e44"),
+    ("🟪", "#aa8ed6"),
+    ("🟨", "#fdcb58"),
+    ("🟫", "#c1694f"),
+    ("⬛", "#31373d"),
+]
+
+
+def _mermaid_xychart(
+    title: str,
+    x_label: str,
+    y_label: str,
+    series: List[Tuple[str, List[int], List[float]]],
+) -> str:
+    """
+    Build a Mermaid ``xychart`` code block (fenced) for one or more line series.
+
+    Mermaid xychart has no built-in legend and assigns line colors from the theme
+    palette in series order. To make each line identifiable, the plot color
+    palette is pinned via an init directive and a legend of matching colored-square
+    emoji is emitted above the chart.
+
+    Note on alignment: Mermaid's ``line [ys]`` ignores explicit x-positions and
+    simply spreads the given y-values evenly across the entire x-axis. To keep
+    multiple runs aligned, every series is resampled onto a single shared,
+    evenly-spaced x-grid over the runs' overlapping range. This guarantees all
+    lines have the same length and the same implied x-positions, so equal indices
+    line up to the same step on the axis.
+
+    Args:
+        title: Chart title.
+        x_label: X-axis label.
+        y_label: Y-axis label.
+        series: List of (label, x_indices, y_values) tuples.
+
+    Returns:
+        Markdown string containing the legend and a fenced mermaid block.
+    """
+    series = [s for s in series if s[2]]
+    if not series:
+        return ""
+
+    # Use the overlapping x-range so runs are compared over steps they all cover.
+    x_start = max(min(xs) for _, xs, _ in series)
+    x_end = min(max(xs) for _, xs, _ in series)
+    if x_end <= x_start:
+        # Series cover disjoint ranges (or a single point); fall back to the full
+        # union span so we still render a sensible axis.
+        x_start = min(min(xs) for _, xs, _ in series)
+        x_end = max(max(xs) for _, xs, _ in series)
+
+    # One shared grid for every series -> identical length and x-positions.
+    grid_n = max(2, max(len(ys) for _, _, ys in series))
+    grid = np.linspace(x_start, x_end, grid_n)
+
+    # np.interp requires ascending sample x-values; downsampled indices are sorted.
+    resampled = [(label, np.interp(grid, xs, ys).tolist()) for label, xs, ys in series]
+
+    y_min = min(min(ys) for _, ys in resampled)
+    y_max = max(max(ys) for _, ys in resampled)
+
+    # Pad the y-range slightly so lines are not clipped against the axis.
+    if y_min == y_max:
+        pad = abs(y_min) * 0.05 or 1.0
+    else:
+        pad = (y_max - y_min) * 0.05
+    y_min -= pad
+    y_max += pad
+
+    # Assign a palette entry to each series (cycling if there are more series
+    # than colors) so the legend emoji matches the pinned Mermaid line color.
+    swatches = [_LEGEND_PALETTE[i % len(_LEGEND_PALETTE)] for i in range(len(resampled))]
+    palette = ", ".join(hex_color for _, hex_color in swatches)
+    init_directive = f'%%{{init: {{"themeVariables": {{"xyChart": {{"plotColorPalette": "{palette}"}}}}}}}}%%'
+
+    legend = "**Legend:**<br>" + "<br>".join(f"{emoji} {label}" for (emoji, _), (label, _) in zip(swatches, resampled))
+
+    lines = [legend, "", "```mermaid", init_directive, "xychart", f'    title "{title}"']
+    lines.append(f'    x-axis "{x_label}" {int(round(x_start))} --> {int(round(x_end))}')
+    lines.append(f'    y-axis "{y_label}" {y_min:.4f} --> {y_max:.4f}')
+    for _, ys in resampled:
+        formatted = ", ".join(f"{v:.4f}" for v in ys)
+        lines.append(f"    line [{formatted}]")
+    lines.append("```")
+
+    return "\n".join(lines)
+
+
+def _write_mermaid(output_dir: Path, filename: str, block: str) -> None:
+    """
+    Write a single Mermaid chart to a markdown file inside ``output_dir``.
+
+    The path is sanitized to prevent path traversal from an untrusted output
+    directory: ``filename`` is reduced to its bare basename, and the fully
+    resolved destination is verified to stay within the resolved output
+    directory before opening.
+    """
+    # Strip any directory components so a crafted filename cannot escape output_dir.
+    safe_name = os.path.basename(filename)
+    base_dir = output_dir.resolve()
+    output_file = (base_dir / safe_name).resolve()
+
+    # Confine the write to base_dir (defense against traversal via symlinks/..).
+    if base_dir != output_file.parent:
+        raise ValueError(f"Refusing to write outside output directory: {output_file}")
+
+    content = f"{block}\n"
+    with open(output_file, "w") as f:
+        f.write(content)
+    print(f"Saved: {output_file}")
+
+
+def export_loss_comparison_mermaid(
+    all_data: Dict[str, Dict[str, List[float]]],
+    output_path: Path,
+    title_prefix: str = "",
+    max_steps: Optional[int] = None,
+    max_points: int = 60,
+    file_prefix: str = "",
+) -> None:
+    """Export loss curves for all runs as a Mermaid diagram (losses.md)."""
+    series: List[Tuple[str, List[int], List[float]]] = []
+    for name, data in all_data.items():
+        losses = data["losses"]
+        if max_steps:
+            losses = losses[:max_steps]
+        xs, ys = _downsample(losses, max_points)
+        series.append((name, xs, ys))
+
+    title = f"{title_prefix}Loss Comparison: All Runs" if title_prefix else "Loss Comparison: All Runs"
+    block = _mermaid_xychart(title, "Step", "Loss", series)
+    if block:
+        _write_mermaid(output_path, f"{file_prefix}losses.md", block)
+
+
+def export_loss_difference_mermaid(
+    all_data: Dict[str, Dict[str, List[float]]],
+    baseline_name: str,
+    output_path: Path,
+    title_prefix: str = "",
+    max_steps: Optional[int] = None,
+    max_points: int = 60,
+    file_prefix: str = "",
+) -> None:
+    """Export loss differences relative to baseline as a Mermaid diagram (losses_diff.md)."""
+    if baseline_name not in all_data:
+        print(f"Warning: Baseline '{baseline_name}' not found, skipping Mermaid loss difference export")
+        return
+
+    baseline_losses = all_data[baseline_name]["losses"]
+    if max_steps:
+        baseline_losses = baseline_losses[:max_steps]
+
+    series: List[Tuple[str, List[int], List[float]]] = []
+    for name, data in all_data.items():
+        if name == baseline_name:
+            continue
+        losses = data["losses"]
+        if max_steps:
+            losses = losses[:max_steps]
+        min_len = min(len(losses), len(baseline_losses))
+        loss_diff = (np.array(losses[:min_len]) - np.array(baseline_losses[:min_len])).tolist()
+        xs, ys = _downsample(loss_diff, max_points)
+        series.append((f"{name} vs {baseline_name}", xs, ys))
+
+    title = (
+        f"{title_prefix}Loss Difference: Compared Runs vs Baseline"
+        if title_prefix
+        else "Loss Difference: Compared Runs vs Baseline"
+    )
+    block = _mermaid_xychart(title, "Step", "Loss Difference", series)
+    if block:
+        _write_mermaid(output_path, f"{file_prefix}losses_diff.md", block)
+
+
+def export_step_time_mermaid(
+    all_data: Dict[str, Dict[str, List[float]]],
+    output_path: Path,
+    title_prefix: str = "",
+    max_points: int = 60,
+    file_prefix: str = "",
+) -> None:
+    """Export step time comparison as a Mermaid diagram (step_time.md)."""
+    series: List[Tuple[str, List[int], List[float]]] = []
+    for name, data in all_data.items():
+        xs, ys = _downsample(data["step_times"], max_points)
+        series.append((name, xs, ys))
+
+    title = f"{title_prefix}Step Time Comparison" if title_prefix else "Step Time Comparison"
+    block = _mermaid_xychart(title, "Step (after warmup)", "Time (ms)", series)
+    if block:
+        _write_mermaid(output_path, f"{file_prefix}step_time.md", block)
+
+
+def main(raw_args: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(
         description="Compare training logs and generate comparison plots.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -222,6 +451,16 @@ Examples:
     # Specify output directory and limit steps
     python plot_training_comparison.py --baseline run1.txt --compare run2.txt \\
         --output-dir ./my_plots --max-steps 5000
+
+    # Export Mermaid charts to markdown for a GitHub Actions step summary
+    python plot_training_comparison.py --baseline run1.txt --compare run2.txt \\
+        --output-dir ./plots --mermaid
+    cat ./plots/*.md >> "$GITHUB_STEP_SUMMARY"
+
+    # Prefix output filenames (keeps artifact basenames unique across CI matrix jobs)
+    python plot_training_comparison.py --baseline run1.txt --compare run2.txt \\
+        --output-dir ./plots --mermaid --file-prefix "nano_gpt_n300_"
+    # -> nano_gpt_n300_losses.png, nano_gpt_n300_losses.md, ...
         """,
     )
 
@@ -263,8 +502,41 @@ Examples:
         default="",
         help="Prefix for plot titles (e.g., 'NanoLlama SiLU ')",
     )
+    parser.add_argument(
+        "--file-prefix",
+        default="",
+        help="Prefix prepended to every output filename (e.g. 'nano_gpt_n300_' produces "
+        "'nano_gpt_n300_losses.png'). Useful for keeping artifact basenames unique across CI matrix jobs. "
+        "Non-alphanumeric characters (except '.', '_', '-') are replaced with '_'.",
+    )
+    parser.add_argument(
+        "--mermaid",
+        action="store_true",
+        help="Export the comparison charts as Mermaid diagrams (losses.md, losses_diff.md, step_time.md) "
+        "in the output directory, mirroring the PNG outputs. Each file is GitHub-flavored markdown and "
+        "can be appended to $GITHUB_STEP_SUMMARY.",
+    )
+    parser.add_argument(
+        "--mermaid-max-points",
+        type=int,
+        default=100,
+        help="Max data points per Mermaid line series (data is downsampled; default: 100)",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip generating PNG plots (useful when only Mermaid/markdown output is needed)",
+    )
 
-    args = parser.parse_args()
+    args = parser.parse_args(raw_args)
+
+    # A chart needs at least two points; zero would silently emit no Markdown and
+    # negative values would fail deep inside NumPy with an unclear error.
+    if args.mermaid_max_points < 2:
+        parser.error("--mermaid-max-points must be at least 2")
+
+    # Sanitize the file prefix so it cannot introduce path separators/traversal.
+    file_prefix = re.sub(r"[^A-Za-z0-9._-]", "_", args.file_prefix)
 
     # Collect all log files
     all_files = [args.baseline] + args.compare
@@ -306,15 +578,35 @@ Examples:
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Generate plots
-    print("\nGenerating plots...")
     baseline_label = labels[0]
 
-    plot_loss_comparison(all_data, output_path, args.title_prefix, args.max_steps)
-    plot_step_time(all_data, output_path, args.title_prefix)
+    # Generate plots
+    if not args.no_plots:
+        print("\nGenerating plots...")
+        plot_loss_comparison(all_data, output_path, args.title_prefix, args.max_steps, file_prefix)
+        plot_step_time(all_data, output_path, args.title_prefix, file_prefix)
 
-    if len(all_data) > 1:
-        plot_loss_difference(all_data, baseline_label, output_path, args.title_prefix, args.max_steps)
+        if len(all_data) > 1:
+            plot_loss_difference(all_data, baseline_label, output_path, args.title_prefix, args.max_steps, file_prefix)
+
+    # Export Mermaid markdown
+    if args.mermaid:
+        print("\nExporting Mermaid markdown...")
+        export_loss_comparison_mermaid(
+            all_data, output_path, args.title_prefix, args.max_steps, args.mermaid_max_points, file_prefix
+        )
+        export_step_time_mermaid(all_data, output_path, args.title_prefix, args.mermaid_max_points, file_prefix)
+
+        if len(all_data) > 1:
+            export_loss_difference_mermaid(
+                all_data,
+                baseline_label,
+                output_path,
+                args.title_prefix,
+                args.max_steps,
+                args.mermaid_max_points,
+                file_prefix,
+            )
 
     print("\nDone!")
 
