@@ -139,10 +139,11 @@ def generate_qsr_pack_combinations(
         for dest_acc in get_dest_acc_modes(in_fmt):
             if is_supported_dest_mode_dependent_conversion(in_fmt, out_fmt, dest_acc):
                 if is_perf:
-                    tile_dims = MX_SUPPORTED_TILE_SIZES[0]
+                    tile_dims = (16, 16)
                     if is_mx_unsupported_tile_dims(in_fmt, out_fmt, tile_dims):
                         continue
-                    input_dimensions = [32, 32]  # [rows, columns]
+                    tile_shape = construct_tile_shape(tile_dims)
+                    dimensions = [32, 32]
                     for dest_sync in dest_sync_modes:
                         for relu_type in relu_types:
                             combinations.append(
@@ -150,7 +151,7 @@ def generate_qsr_pack_combinations(
                                     fmt,
                                     dest_acc,
                                     dest_sync,
-                                    runtime(input_dimensions),
+                                    runtime(dimensions),
                                     runtime(relu_type),
                                     runtime(tile_dims),
                                 )
@@ -338,6 +339,7 @@ def test_pack_quasar(
         ),
         "unpack_to_dest": unpack_to_dest,
         "dest_acc": dest_acc,
+        "boot_mode": boot_mode,
         "disable_format_inference": (formats.input_format.is_mx_format()),
     }
 
@@ -354,7 +356,6 @@ def test_pack_quasar(
         )
 
     configuration = TestConfig(
-        boot_mode=boot_mode,
         **{
             **test_config_kwargs,
             "templates": test_config_kwargs["templates"]

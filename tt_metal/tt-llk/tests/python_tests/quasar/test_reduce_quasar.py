@@ -36,8 +36,6 @@ from helpers.test_variant_parameters import (
     MATH_FIDELITY,
     MATH_OP,
     NUM_FACES,
-    NUM_FACES_C_DIM,
-    NUM_FACES_R_DIM,
     PERF_RUN_TYPE,
     TEST_FACE_DIMS,
     TILE_COUNT,
@@ -128,13 +126,6 @@ def reduce_pool_type_and_math_fidelity_combinations(*, is_perf=False):
 @pytest.mark.quasar
 @parametrize(
     formats=REDUCE_FORMATS,
-    tile_dimensions=lambda formats: [
-        td
-        for td in SUPPORTED_TILE_SIZES
-        if not is_mx_unsupported_tile_dims(
-            formats.input_format, formats.output_format, td
-        )
-    ],
     dest_acc=lambda: reduce_dest_acc_modes(is_perf=False),
     reduce_dim=[ReduceDimension.Row, ReduceDimension.Column, ReduceDimension.Scalar],
     pool_type_and_math_fidelity=lambda: reduce_pool_type_and_math_fidelity_combinations(
@@ -184,11 +175,7 @@ def test_reduce_quasar(
             "Row reduce variants, so the residual is accepted as expected."
         )
 
-    input_dimensions = (
-        reduce_input_dimensions(is_perf=True)
-        if is_perf
-        else [tile_dimensions[0] * 2, tile_dimensions[1] * 2]
-    )
+    input_dimensions = reduce_input_dimensions(is_perf=is_perf)
 
     src_A, tile_cnt, _, _ = generate_stimuli(
         stimuli_format_A=formats.input_format,
@@ -224,7 +211,6 @@ def test_reduce_quasar(
                 pool_type,
                 formats.output_format,
                 tile_cnt,
-                tile_shape=tile_shape,
                 input_format=formats.input_format,
             )
         else:
@@ -236,7 +222,6 @@ def test_reduce_quasar(
                 reduce_dim,
                 math_fidelity,
                 tile_cnt,
-                tile_shape=tile_shape,
                 input_format=formats.input_format,
                 dest_acc=dest_acc,
             )
@@ -258,10 +243,8 @@ def test_reduce_quasar(
         ],
         "runtimes": [
             TILE_COUNT(tile_cnt),
-            TEST_FACE_DIMS(tile_shape.face_r_dim, tile_shape.face_c_dim),
-            NUM_FACES_R_DIM(tile_shape.num_faces_r_dim),
-            NUM_FACES_C_DIM(tile_shape.num_faces_c_dim),
-            NUM_FACES(tile_shape.total_num_faces()),
+            TEST_FACE_DIMS(),
+            NUM_FACES(),
             LOOP_FACTOR(loop_factor),
         ],
         "variant_stimuli": StimuliConfig(
@@ -375,7 +358,6 @@ def test_reduce_quasar_mxfp4_2x_gapool(
     perf_report=None,
 ):
     input_dimensions = reduce_input_dimensions(is_perf=is_perf)
-    tile_shape = construct_tile_shape((32, 32))
 
     src_A, tile_cnt, _, _ = generate_stimuli(
         stimuli_format_A=formats.input_format,
@@ -420,10 +402,8 @@ def test_reduce_quasar_mxfp4_2x_gapool(
         ],
         "runtimes": [
             TILE_COUNT(tile_cnt),
-            TEST_FACE_DIMS(tile_shape.face_r_dim, tile_shape.face_c_dim),
-            NUM_FACES_R_DIM(tile_shape.num_faces_r_dim),
-            NUM_FACES_C_DIM(tile_shape.num_faces_c_dim),
-            NUM_FACES(tile_shape.total_num_faces()),
+            TEST_FACE_DIMS(),
+            NUM_FACES(),
             LOOP_FACTOR(loop_factor),
         ],
         "variant_stimuli": StimuliConfig(

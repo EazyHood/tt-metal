@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-from helpers.llk_params import PERF_RUN_TYPES_QUASAR, Transpose
+from helpers.llk_params import Transpose, PERF_RUN_TYPES_QUASAR
 from helpers.param_config import parametrize
 from quasar.test_matmul_quasar import (
     MATMUL_FORMAT,
@@ -15,7 +15,6 @@ from quasar.test_matmul_quasar import (
     matmul_register_format_hints,
 )
 from quasar.test_matmul_quasar import test_matmul as run_matmul
-
 
 @pytest.mark.perf
 @pytest.mark.quasar

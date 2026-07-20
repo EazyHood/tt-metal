@@ -11,7 +11,6 @@ from quasar.test_unpack_tilize_quasar import (
     test_unpack_tilize_quasar as run_unpack_tilize,
 )
 
-
 @pytest.mark.perf
 @pytest.mark.quasar
 @parametrize(

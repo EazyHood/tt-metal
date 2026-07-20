@@ -78,6 +78,14 @@ def reuse_dest_dest_sync_modes(*, is_perf=False):
     return [DestSync.Half] if is_perf else [DestSync.Half, DestSync.Full]
 
 
+def reuse_dest_input_dimensions(*, is_perf=False):
+    return INPUT_DIMENSIONS if is_perf else INPUT_DIMENSIONS
+
+
+def reuse_dest_output_dimensions(*, is_perf=False):
+    return OUTPUT_DIMENSIONS if is_perf else OUTPUT_DIMENSIONS
+
+
 def reuse_dest_mathops(formats, *, is_perf=False):
     if is_perf:
         return [MathOperation.Elwadd]
@@ -370,6 +378,7 @@ def test_eltwise_binary_reuse_dest_quasar(
         ),
         "unpack_to_dest": False,
         "dest_acc": DestAccumulation.No,
+        "boot_mode": boot_mode,
         "disable_format_inference": disable_format_inference,
     }
 
@@ -381,7 +390,6 @@ def test_eltwise_binary_reuse_dest_quasar(
     configuration = TestConfig(
         **{
             **test_config_kwargs,
-            "boot_mode": boot_mode,
             "templates": test_config_kwargs["templates"]
             + [PERF_RUN_TYPE(PerfRunType.L1_TO_L1)],
         },

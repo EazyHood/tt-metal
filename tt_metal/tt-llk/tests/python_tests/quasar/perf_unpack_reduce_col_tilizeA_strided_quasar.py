@@ -14,12 +14,13 @@ from quasar.test_unpack_reduce_col_tilizeA_strided_quasar import (
     unpack_reduce_col_tilizeA_strided_implied_math_formats,
 )
 
-
 @pytest.mark.perf
 @pytest.mark.quasar
 @parametrize(
     formats_dest_acc_sync_unpack_reduce_col_tilizeA_strided_sel_dims=PERF_UNPACK_REDUCE_COL_TILIZEA_STRIDED_COMBINATIONS,
-    implied_math_format=unpack_reduce_col_tilizeA_strided_implied_math_formats,
+    implied_math_format=lambda: unpack_reduce_col_tilizeA_strided_implied_math_formats(
+        is_perf=True
+    ),
     run_types=PERF_RUN_TYPES_QUASAR,
     loop_factor=[32],
     is_perf=[True],

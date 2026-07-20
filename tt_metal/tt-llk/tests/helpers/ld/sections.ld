@@ -16,7 +16,7 @@ __ldm_start = DEFINED(__fw_export_ldm_end) ? __fw_export_ldm_end : ORIGIN(REGION
  */
 __device_print_strings_vma      = 0x6400000;
 __device_print_strings_info_vma = 0x6500000;
-__profiler_meta_vma = 0x6600000;
+__profiler_meta_vma             = 0x6600000;
 
 OUTPUT_FORMAT("elf32-littleriscv", "elf32-littleriscv",
        "elf32-littleriscv")

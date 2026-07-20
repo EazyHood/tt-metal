@@ -36,8 +36,6 @@ from helpers.test_variant_parameters import (
     IMPLIED_MATH_FORMAT,
     LOOP_FACTOR,
     NUM_FACES,
-    NUM_FACES_C_DIM,
-    NUM_FACES_R_DIM,
     PERF_RUN_TYPE,
     TEST_FACE_DIMS,
     TILE_COUNT,
@@ -105,6 +103,21 @@ def generate_unpack_tilize_combinations(
             for dest_acc in dest_acc_modes:
                 for dest_sync in dest_sync_modes:
                     for unpacker_sel in (UnpackerEngine.UnpA,):
+                        combinations.append(
+                            (
+                                fmt,
+                                dest_acc,
+                                dest_sync,
+                                unpacker_sel,
+                                perf_dimensions,
+                            )
+                        )
+            continue
+
+        for dest_acc in dest_acc_modes:
+            for dest_sync in dest_sync_modes:
+                for unpacker_sel in unpacker_engines:
+                    for dimensions in dimensions_cache[(dest_acc, dest_sync)]:
                         combinations.append(
                             (
                                 fmt,
@@ -179,12 +192,12 @@ PERF_UNPACK_TILIZE_COMBINATIONS = generate_unpack_tilize_combinations(
 
 @pytest.mark.quasar
 @parametrize(
-    formats_dest_acc_sync_unpack_sel_dimensions_tile_dims=ALL_UNPACK_TILIZE_COMBINATIONS,
+    formats_dest_acc_sync_unpack_sel_dimensions=ALL_UNPACK_TILIZE_COMBINATIONS,
     run_types=[[PerfRunType.L1_TO_L1]],
     loop_factor=[1],
 )
 def test_unpack_tilize_quasar(
-    formats_dest_acc_sync_unpack_sel_dimensions_tile_dims,
+    formats_dest_acc_sync_unpack_sel_dimensions,
     run_types,
     loop_factor,
     boot_mode=BootMode.DEFAULT,
@@ -192,17 +205,9 @@ def test_unpack_tilize_quasar(
     is_perf=False,
     perf_report=None,
 ):
-    combination = formats_dest_acc_sync_unpack_sel_dimensions_tile_dims
-    if len(combination) == 1 and isinstance(combination[0], tuple):
-        combination = combination[0]
-    (
-        formats,
-        dest_acc,
-        dest_sync_mode,
-        unpacker_sel,
-        input_dimensions,
-        tile_dimensions,
-    ) = combination
+    (formats, dest_acc, dest_sync_mode, unpacker_sel, input_dimensions) = (
+        formats_dest_acc_sync_unpack_sel_dimensions
+    )
 
     tile_shape = construct_tile_shape(tile_dimensions)
 
@@ -238,9 +243,7 @@ def test_unpack_tilize_quasar(
         "test_name": "sources/quasar/unpack_tilize_quasar_test.cpp",
         "formats": formats,
         "templates": [
-            generate_input_dim(
-                input_dimensions, input_dimensions, tile_dimensions=tile_dimensions
-            ),
+            generate_input_dim(input_dimensions, input_dimensions),
             IMPLIED_MATH_FORMAT(ImpliedMathFormat.Yes),
             UNPACKER_ENGINE_SEL(unpacker_sel),
             DATA_COPY_TYPE(
@@ -252,10 +255,8 @@ def test_unpack_tilize_quasar(
         ],
         "runtimes": [
             TILE_COUNT(tile_cnt_A),
-            TEST_FACE_DIMS(tile_shape.face_r_dim),
-            NUM_FACES(num_faces),
-            NUM_FACES_R_DIM(tile_shape.num_faces_r_dim),
-            NUM_FACES_C_DIM(tile_shape.num_faces_c_dim),
+            TEST_FACE_DIMS(),
+            NUM_FACES(),
             LOOP_FACTOR(loop_factor),
         ],
         "variant_stimuli": StimuliConfig(
@@ -276,6 +277,7 @@ def test_unpack_tilize_quasar(
             formats.input_format.is_32_bit() and dest_acc == DestAccumulation.Yes
         ),
         "dest_acc": dest_acc,
+        "boot_mode": boot_mode,
         "disable_format_inference": formats.input_format.is_mx_format(),
     }
 
@@ -285,7 +287,6 @@ def test_unpack_tilize_quasar(
         return
 
     configuration = TestConfig(
-        boot_mode=boot_mode,
         **{
             **test_config_kwargs,
             "templates": test_config_kwargs["templates"]

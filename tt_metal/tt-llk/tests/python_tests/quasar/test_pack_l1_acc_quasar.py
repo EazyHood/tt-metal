@@ -49,6 +49,7 @@ from helpers.utils import passed_test
 INPUT_DIMENSIONS = [[512, 64], [192, 512]]
 # Nested list of [H, W] pairs: a flat [H, W] is expanded by parametrize into
 # input_dimensions=H (int) and breaks generate_stimuli / rows, cols = dims.
+PERF_INPUT_DIMENSIONS = [[512, 64]]
 PERF_ONLY_INPUT_DIMENSIONS = [[512, 64]]
 TILE_DIMENSIONS = [32, 32]
 # Complete list of formats that are supported with L1 accumulation as the
@@ -284,6 +285,7 @@ def test_pack_l1_acc_quasar(
         ),
         "unpack_to_dest": unpack_to_dest,
         "dest_acc": dest_acc,
+        "boot_mode": boot_mode,
         "disable_format_inference": formats.input_format.is_mx_format(),
     }
 
@@ -297,7 +299,6 @@ def test_pack_l1_acc_quasar(
             **test_config_kwargs,
             "templates": test_config_kwargs["templates"]
             + [PERF_RUN_TYPE(PerfRunType.L1_TO_L1)],
-            "boot_mode": boot_mode,
         },
     )
 

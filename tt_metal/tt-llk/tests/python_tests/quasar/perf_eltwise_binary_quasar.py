@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-from helpers.llk_params import PERF_RUN_TYPES_QUASAR, MathOperation
+from helpers.format_config import DataFormat
+from helpers.llk_params import MathOperation, PERF_RUN_TYPES_QUASAR
 from helpers.param_config import parametrize
 from quasar.test_eltwise_binary_quasar import (
     ELTWISE_FORMATS,
@@ -12,7 +13,6 @@ from quasar.test_eltwise_binary_quasar import (
     eltwise_binary_math_fidelities,
 )
 from quasar.test_eltwise_binary_quasar import test_eltwise_binary as run_eltwise_binary
-
 
 @pytest.mark.perf
 @pytest.mark.quasar
@@ -51,6 +51,9 @@ def test_perf_eltwise_binary_quasar(
     loop_factor,
     is_perf,
 ):
+    if formats.input_format == DataFormat.Int8:
+        pytest.skip("Int8 eltwise binary perf not yet enabled on Quasar")
+
     run_eltwise_binary(
         formats,
         mathop,

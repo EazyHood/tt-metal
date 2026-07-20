@@ -14,7 +14,6 @@ from helpers.llk_params import (
     DestSync,
     ImpliedMathFormat,
     PerfRunType,
-    UnpackerEngine,
     format_dict,
 )
 from helpers.param_config import (
@@ -48,6 +47,10 @@ from helpers.tile_constants import FACE_C_DIM, get_tile_params
 from helpers.utils import passed_test
 
 INPUT_DIMENSIONS = [[512, 32]]
+# Nested list of [H, W] pairs: a flat [H, W] is expanded by parametrize into
+# input_dimensions=H (int) and breaks generate_stimuli / rows, cols = dims.
+PERF_INPUT_DIMENSIONS = [[512, 32]]
+PERF_ONLY_INPUT_DIMENSIONS = [[512, 32]]
 TILE_DIMENSIONS = [32, 32]
 
 _FLOAT32_WIDE_RANGE = 10_000.0
@@ -97,6 +100,37 @@ UNARY_BROADCAST_FORMATS = input_output_formats(
 )
 
 
+def unary_broadcast_dest_sync_modes(*, is_perf=False):
+    return [DestSync.Half] if is_perf else [DestSync.Half, DestSync.Full]
+
+
+def unary_broadcast_implied_math_formats(formats, *, is_perf=False):
+    if is_perf:
+        return [ImpliedMathFormat.Yes]
+    if formats.input_format.is_mx_format():
+        return [ImpliedMathFormat.Yes]
+    return [ImpliedMathFormat.No, ImpliedMathFormat.Yes]
+
+
+def unary_broadcast_input_dimensions(*, is_perf=False):
+    return PERF_ONLY_INPUT_DIMENSIONS if is_perf else INPUT_DIMENSIONS
+
+
+UNARY_BROADCAST_FORMATS = input_output_formats(
+    [
+        DataFormat.Float16_b,
+        # DataFormat.Float32, Buggy functionality for Float32 (unpack_to_dest=True) tbd
+        DataFormat.MxFp8R,
+        DataFormat.MxFp8P,
+        DataFormat.MxFp4,
+        DataFormat.MxInt8,
+        DataFormat.MxInt4,
+        DataFormat.MxInt2,
+    ],
+    same=True,
+)
+
+
 def get_valid_dest_acc_unary_broadcast(formats):
     """Valid dest accumulation modes for unary broadcast."""
     if formats.input_format.is_32_bit():
@@ -117,7 +151,7 @@ def get_valid_dest_acc_unary_broadcast(formats):
     ],
     implied_math_format=lambda formats: unary_broadcast_implied_math_formats(formats),
     dest_sync_mode=lambda: unary_broadcast_dest_sync_modes(is_perf=False),
-    input_dimensions=runtime(INPUT_DIMENSIONS),
+    input_dimensions=runtime(lambda: unary_broadcast_input_dimensions(is_perf=False)),
     run_types=[[PerfRunType.L1_TO_L1]],
     loop_factor=[1],
 )
@@ -158,16 +192,19 @@ def test_unary_broadcast_quasar(
         BlocksCalculationAlgorithm.Standard,
     )
 
-    spec = _wide_range_spec(formats.input_format)
-    src_A, _, src_B, _ = generate_stimuli(
-        stimuli_format_A=formats.input_format,
-        input_dimensions_A=input_dimensions,
-        stimuli_format_B=formats.input_format,
-        input_dimensions_B=input_dimensions,
-        spec_A=spec,
-        spec_B=spec,
-        tile_dimensions=TILE_DIMENSIONS,
-    )
+    torch_format = format_dict[formats.input_format]
+    src_B = torch.randn(num_elements, dtype=torch_format)
+
+    if not is_perf:
+        generate_broadcast_golden = get_golden_generator(BroadcastGolden)
+        golden_tensor = generate_broadcast_golden(
+            broadcast_type,
+            src_B,
+            formats.output_format,
+            num_faces=num_faces,
+            tile_cnt=tile_cnt,
+            face_r_dim=face_r_dim,
+        )
 
     if not is_perf:
         generate_broadcast_golden = get_golden_generator(BroadcastGolden)
@@ -184,8 +221,6 @@ def test_unary_broadcast_quasar(
 
     if is_perf and perf_report is None:
         raise ValueError("perf_report must be provided when is_perf=True")
-
-    unpacker_sel = UnpackerEngine.UnpA if unpack_to_dest else UnpackerEngine.UnpB
 
     test_config_kwargs = {
         "test_name": "sources/quasar/eltwise_unary_broadcast_quasar_test.cpp",
@@ -231,6 +266,8 @@ def test_unary_broadcast_quasar(
         ),
         "unpack_to_dest": unpack_to_dest,
         "dest_acc": dest_acc,
+        "boot_mode": boot_mode,
+        "disable_format_inference": (implied_math_format == ImpliedMathFormat.Yes),
     }
 
     if is_perf:
@@ -239,7 +276,6 @@ def test_unary_broadcast_quasar(
         return
 
     configuration = TestConfig(
-        boot_mode=boot_mode,
         **{
             **test_config_kwargs,
             "templates": test_config_kwargs["templates"]

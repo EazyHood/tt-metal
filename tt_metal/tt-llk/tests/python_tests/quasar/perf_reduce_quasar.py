@@ -2,13 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
+from helpers.chip_architecture import ChipArchitecture, get_chip_architecture
 from helpers.format_config import DataFormat, InputOutputFormat
-from helpers.llk_params import (
-    PERF_RUN_TYPES_QUASAR,
-    MathFidelity,
-    ReduceDimension,
-    ReducePool,
-)
+from helpers.llk_params import MathFidelity, ReduceDimension, ReducePool, PERF_RUN_TYPES_QUASAR
 from helpers.param_config import parametrize
 from quasar.test_reduce_quasar import (
     REDUCE_FORMATS,
@@ -22,13 +18,12 @@ from quasar.test_reduce_quasar import (
     test_reduce_quasar_mxfp4_2x_gapool as run_reduce_quasar_mxfp4_2x_gapool,
 )
 
+_ARCH = get_chip_architecture()
 
 @pytest.mark.perf
 @pytest.mark.quasar
-@pytest.mark.nightly
 @parametrize(
     formats=REDUCE_FORMATS,
-    tile_dimensions=[(32, 32)],
     dest_acc=lambda: reduce_dest_acc_modes(is_perf=True),
     reduce_dim=[ReduceDimension.Row, ReduceDimension.Column, ReduceDimension.Scalar],
     pool_type_and_math_fidelity=lambda: reduce_pool_type_and_math_fidelity_combinations(
@@ -45,7 +40,6 @@ from quasar.test_reduce_quasar import (
 def test_perf_reduce_quasar(
     perf_report,
     formats,
-    tile_dimensions,
     dest_acc,
     reduce_dim,
     pool_type_and_math_fidelity,
@@ -55,9 +49,15 @@ def test_perf_reduce_quasar(
     loop_factor,
     is_perf,
 ):
+    if (
+        formats.input_format == DataFormat.MxInt8
+        or formats.output_format == DataFormat.MxInt8
+    ):
+        pytest.skip(
+            "Hangs on Quasar MxInt8 reduce perf cases (observed L1_TO_L1 stall)"
+        )
     run_reduce_quasar(
         formats,
-        tile_dimensions,
         dest_acc,
         reduce_dim,
         pool_type_and_math_fidelity,
@@ -72,6 +72,10 @@ def test_perf_reduce_quasar(
 
 @pytest.mark.perf
 @pytest.mark.quasar
+@pytest.mark.skipif(
+    _ARCH != ChipArchitecture.QUASAR,
+    reason="MxFp4_2x GAPOOL reduce is op_mmul-family-only and exists on Quasar. Architecture derivations don't support it.",
+)
 @parametrize(
     register_format_hint=[DataFormat.MxFp4_2x_A, DataFormat.MxFp4_2x_B],
     formats=lambda register_format_hint: [

@@ -8,10 +8,8 @@
 
 #include "ckernel.h"
 #include "llk_defs.h"
-#include "llk_memory_checks.h"
 #include "perf.h"
 #include "profiler.h"
-#include "quasar_test_common.h"
 #include "sfpu_stub.h"
 
 #ifdef LLK_TRISC_UNPACK
@@ -27,68 +25,61 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const FormatConfig& formats = params.formats;
 #endif
 #ifndef SPEED_OF_LIGHT
-    const std::uint32_t LOOP_FACTOR = params.LOOP_FACTOR;
-    const Operand& buffer_A         = params.buffer_A;
-    const Operand& buffer_B         = params.buffer_B;
+    const std::uint32_t LOOP_FACTOR     = params.LOOP_FACTOR;
+    const std::uint32_t TEST_FACE_C_DIM = params.TEST_FACE_C_DIM;
+    const std::uint32_t TEST_FACE_R_DIM = params.TEST_FACE_R_DIM;
+    const std::uint32_t num_faces       = params.num_faces;
+    const Operand& buffer_A             = params.buffer_A;
+    const Operand& buffer_B             = params.buffer_B;
 #endif
     tdma_descriptor_t td_val;
     const std::uint32_t buf_desc_id = 0;
 
     {
         ZONE_SCOPED("INIT")
-        if constexpr (unpack_to_dest)
+        constexpr auto dest_producer = unpack_to_dest ? dest_dvalid_client::UNPACK : dest_dvalid_client::FPU;
+        set_up_dest_dvalid_per_thread<dest_dvalid_client::UNPACK>({dest_producer, dest_dvalid_client::PACK});
+
+        if constexpr (unpack_to_dest && is_fp32_dest_acc_en)
         {
-            if constexpr (PERF_RUN_TYPE == PerfRunType::L1_TO_L1)
+            const bool int32_dest = static_cast<DataFormat>(formats.unpack_A_src) == DataFormat::Int32;
+            if (int32_dest)
             {
-                set_up_dest_dvalid_per_thread<dest_dvalid_client::UNPACK>({dest_dvalid_client::UNPACK, dest_dvalid_client::PACK});
+                _llk_math_upk_to_dest_hw_configure_<IMPLIED_MATH_FORMAT, false, true>();
             }
             else
             {
-                set_up_zero_dest_dvalid_handshake_for_unpack();
-            }
-
-            if constexpr (is_fp32_dest_acc_en)
-            {
-                const bool int32_dest = static_cast<DataFormat>(formats.unpack_A_src) == DataFormat::Int32;
-                if (int32_dest)
-                {
-                    _llk_math_upk_to_dest_hw_configure_<IMPLIED_MATH_FORMAT, false /*fp32_dest*/, true /*int32_dest*/>();
-                }
-                else
-                {
-                    _llk_math_upk_to_dest_hw_configure_<IMPLIED_MATH_FORMAT, true /*fp32_dest*/, false /*int32_dest*/>();
-                }
-            }
-            else
-            {
-                _llk_math_upk_to_dest_hw_configure_<IMPLIED_MATH_FORMAT, false /*fp32_dest*/, false /*int32_dest*/>();
+                _llk_math_upk_to_dest_hw_configure_<IMPLIED_MATH_FORMAT, true, false>();
             }
         }
-        else
+        else if constexpr (unpack_to_dest)
         {
-            set_up_dest_dvalid_per_thread<dest_dvalid_client::UNPACK>({dest_dvalid_client::FPU, dest_dvalid_client::PACK});
+            _llk_math_upk_to_dest_hw_configure_<IMPLIED_MATH_FORMAT, false, false>();
         }
 
-        const ckernel::TensorShape tensor_shape = TENSOR_SHAPE_FROM_PARAMS(params);
+        buffer_descriptor_u bd_val = {0};
+
         unsigned l1_addr_16B;
         if constexpr (UNPACKER_ENGINE_SEL == p_unpacr::UNP_A || UNPACKER_ENGINE_SEL == p_unpacr::UNP_DEST)
         {
-            l1_addr_16B = L1_ADDRESS(buffer_A[0]);
+            l1_addr_16B = buffer_A[0] / 16;
         }
         else if constexpr (UNPACKER_ENGINE_SEL == p_unpacr::UNP_B)
         {
-            l1_addr_16B = L1_ADDRESS(buffer_B[0]);
+            l1_addr_16B = buffer_B[0] / 16;
         }
 
-        if (tensor_shape.face_r_dim <= ckernel::unpack::UNPACR_STRIDE_MAX_ROWS)
-        {
-            td_val =
-                ckernel::trisc::construct_tdma_desc<L1AccessMode::Strided>(tensor_shape, l1_addr_16B, formats.unpack_A_src, buf_desc_id, formats.unpack_A_dst);
-        }
-        else
-        {
-            td_val = ckernel::trisc::construct_tdma_desc(tensor_shape, l1_addr_16B, formats.unpack_A_src, buf_desc_id, formats.unpack_A_dst);
-        }
+        bd_val.f.l1_addr_16B = l1_addr_16B;
+        bd_val.f.format      = static_cast<std::uint8_t>(formats.unpack_A_src);
+        bd_val.f.x_dim       = TEST_FACE_C_DIM;
+        bd_val.f.y_dim       = TEST_FACE_R_DIM;
+        bd_val.f.z_dim       = num_faces;
+
+        td_val.buf_desc        = bd_val;
+        td_val.buf_desc_id     = buf_desc_id;
+        td_val.reg_data_format = static_cast<std::uint8_t>(formats.unpack_A_dst);
+
+        constexpr ckernel::TensorShape tensor_shape = ckernel::DEFAULT_TENSOR_SHAPE;
 
         _configure_buf_desc_table_(td_val.buf_desc_id, td_val.buf_desc);
         if constexpr (is_fp32_dest_acc_en && !unpack_to_dest)
@@ -104,10 +95,6 @@ void run_kernel(RUNTIME_PARAMETERS params)
         {
             _llk_unpack_tilize_block_init_<FULL_CT_DIM, BLOCK_CT_DIM>(buf_desc_id, tensor_shape);
         }
-        else if (tensor_shape.face_r_dim < FACE_R_DIM)
-        {
-            _llk_unpack_tilize_strided_init_small_faces_<UNPACKER_ENGINE_SEL, is_fp32_dest_acc_en, FULL_CT_DIM>(buf_desc_id, tensor_shape);
-        }
         else
         {
             _llk_unpack_tilize_init_<UNPACKER_ENGINE_SEL, is_fp32_dest_acc_en>(buf_desc_id, FULL_CT_DIM, BLOCK_CT_DIM, tensor_shape);
@@ -116,13 +103,13 @@ void run_kernel(RUNTIME_PARAMETERS params)
     }
     {
         ZONE_SCOPED("TILE_LOOP")
-        const ckernel::TensorShape tensor_shape = TENSOR_SHAPE_FROM_PARAMS(params);
-        std::uint32_t y_stride_external         = FULL_CT_DIM * tensor_shape.num_faces_r_dim * tensor_shape.face_r_dim;
+        constexpr ckernel::TensorShape tensor_shape = ckernel::DEFAULT_TENSOR_SHAPE;
+        std::uint32_t y_stride_external             = FULL_CT_DIM * tensor_shape.num_faces_r_dim * tensor_shape.face_r_dim;
 
-        // Quasar fused tilize emits one SrcA dvalid per tile: BLOCK_CT_DIM dvalids per
-        // `_llk_unpack_tilize_` call and BLOCK_RT_DIM calls per outer loop. With
-        // is_fp32_dest_acc_en it also pulses SrcB because FP32 datacopy uses ELWADD.
-        const std::uint32_t total_tilize_dvalids = LOOP_FACTOR * BLOCK_RT_DIM * BLOCK_CT_DIM;
+        // Quasar fused tilize emits 1 SrcA dvalid per `_llk_unpack_tilize_` call (BLOCK_RT_DIM
+        // calls per outer loop). With is_fp32_dest_acc_en it also pulses SrcB via UNPACR_NOP
+        // because FP32 datacopy uses ELWADD on SrcA+SrcB.
+        const std::uint32_t total_tilize_dvalids = LOOP_FACTOR * BLOCK_RT_DIM;
 
         if constexpr (PERF_RUN_TYPE == PerfRunType::PACK_ISOLATE)
         {
@@ -131,15 +118,15 @@ void run_kernel(RUNTIME_PARAMETERS params)
         {
             if constexpr (is_fp32_dest_acc_en)
             {
-                _perf_unpack_loop_set_valid<true /*set_a*/, true /*set_b*/>(total_tilize_dvalids);
+                _perf_unpack_loop_set_valid<true, true>(total_tilize_dvalids);
             }
             else if constexpr (DATA_COPY_TYPE == DataCopyType::A2D)
             {
-                _perf_unpack_loop_set_valid<true /*set_a*/, false /*set_b*/>(total_tilize_dvalids);
+                _perf_unpack_loop_set_valid<true, false>(total_tilize_dvalids);
             }
             else
             {
-                _perf_unpack_loop_set_valid<false /*set_a*/, true /*set_b*/>(total_tilize_dvalids);
+                _perf_unpack_loop_set_valid<false, true>(total_tilize_dvalids);
             }
         }
         else
@@ -150,25 +137,15 @@ void run_kernel(RUNTIME_PARAMETERS params)
                 {
                     for (std::uint32_t y = 0; y < BLOCK_RT_DIM; y++)
                     {
-                        _llk_unpack_tilize_block_(y * y_stride_external /*l1_face_idx*/, y * BLOCK_CT_DIM /*dest_tile_idx*/);
+                        _llk_unpack_tilize_block_(y * y_stride_external, y * BLOCK_CT_DIM);
                     }
-                    if constexpr (PERF_RUN_TYPE == PerfRunType::L1_TO_L1)
-                    {
-                        _llk_unpack_dest_dvalid_section_done_<dest_sync>();
-                    }
-                }
-                else if (tensor_shape.face_r_dim < FACE_R_DIM)
-                {
-                    for (std::uint32_t y = 0; y < BLOCK_RT_DIM; y++)
-                    {
-                        _llk_unpack_tilize_strided_small_faces_<UNPACKER_ENGINE_SEL, FULL_CT_DIM>(tensor_shape, y * FULL_CT_DIM /*l1_tile_idx*/);
-                    }
+                    _llk_unpack_dest_dvalid_section_done_<dest_sync>();
                 }
                 else
                 {
                     for (std::uint32_t y = 0; y < BLOCK_RT_DIM; y++)
                     {
-                        _llk_unpack_tilize_<UNPACKER_ENGINE_SEL>(y * y_stride_external /*l1_tile_idx*/);
+                        _llk_unpack_tilize_<UNPACKER_ENGINE_SEL>(y * y_stride_external);
                     }
                 }
             }
@@ -208,9 +185,9 @@ void run_kernel(RUNTIME_PARAMETERS params)
     {
         {
             ZONE_SCOPED("INIT")
-            // Only end-to-end and math-isolate runs use the FPU→PACK
-            // dest-dvalid handshake.
-            if constexpr (PERF_RUN_TYPE == PerfRunType::L1_TO_L1 || PERF_RUN_TYPE == PerfRunType::MATH_ISOLATE)
+            // PACK_ISOLATE / L1_CONGESTION: skip FPU→PACK dest-dvalid (math is src-clear only
+            // in congestion; pulsing never happens — matches WH/BH unpack_tilize_perf).
+            if constexpr (PERF_RUN_TYPE != PerfRunType::PACK_ISOLATE && PERF_RUN_TYPE != PerfRunType::L1_CONGESTION)
             {
                 set_up_dest_dvalid_per_thread<dest_dvalid_client::FPU>({dest_dvalid_client::FPU, dest_dvalid_client::PACK});
             }
@@ -233,15 +210,15 @@ void run_kernel(RUNTIME_PARAMETERS params)
                 const std::uint32_t total_tilize_dvalids = LOOP_FACTOR * TILE_CNT;
                 if constexpr (is_fp32_dest_acc_en)
                 {
-                    _perf_math_loop_clear_valid<true /*clear_a*/, true /*clear_b*/>(total_tilize_dvalids);
+                    _perf_math_loop_clear_valid<true, true>(total_tilize_dvalids);
                 }
                 else if constexpr (DATA_COPY_TYPE == DataCopyType::A2D)
                 {
-                    _perf_math_loop_clear_valid<true /*clear_a*/, false /*clear_b*/>(total_tilize_dvalids);
+                    _perf_math_loop_clear_valid<true, false>(total_tilize_dvalids);
                 }
                 else
                 {
-                    _perf_math_loop_clear_valid<false /*clear_a*/, true /*clear_b*/>(total_tilize_dvalids);
+                    _perf_math_loop_clear_valid<false, true>(total_tilize_dvalids);
                 }
             }
             else if constexpr (PERF_RUN_TYPE == PerfRunType::MATH_ISOLATE)
@@ -250,7 +227,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
                 {
                     for (std::uint32_t i = 0; i < TILE_CNT; ++i)
                     {
-                        _llk_math_eltwise_unary_datacopy_(i);
+                        _llk_math_eltwise_unary_datacopy_(num_faces * TEST_FACE_R_DIM /*num_rows_per_tile*/, i);
                     }
                 }
             }
@@ -260,7 +237,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
                 {
                     for (std::uint32_t i = 0; i < TILE_CNT; ++i)
                     {
-                        _llk_math_eltwise_unary_datacopy_(i);
+                        _llk_math_eltwise_unary_datacopy_(num_faces * TEST_FACE_R_DIM /*num_rows_per_tile*/, i);
                     }
                     _llk_math_set_dvalid_<p_cleardvalid::FPU, dest_sync>();
                 }
@@ -284,9 +261,12 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const FormatConfig& formats = params.formats;
 #endif
 #ifndef SPEED_OF_LIGHT
-    const std::uint32_t LOOP_FACTOR = params.LOOP_FACTOR;
-    const std::uint32_t TILE_CNT    = params.TILE_CNT;
-    const Operand& buffer_Res       = params.buffer_Res;
+    const std::uint32_t LOOP_FACTOR     = params.LOOP_FACTOR;
+    const std::uint32_t TILE_CNT        = params.TILE_CNT;
+    const std::uint32_t TEST_FACE_C_DIM = params.TEST_FACE_C_DIM;
+    const std::uint32_t TEST_FACE_R_DIM = params.TEST_FACE_R_DIM;
+    const std::uint32_t num_faces       = params.num_faces;
+    const Operand& buffer_Res           = params.buffer_Res;
 #endif
     std::uint32_t const buf_desc_id        = 8;
     const std::uint32_t num_tiles_per_pack = TILE_CNT;
@@ -299,26 +279,34 @@ void run_kernel(RUNTIME_PARAMETERS params)
         // Explicitly clear wait_mask — CFG can persist across run-types in the same session.
         if constexpr (PERF_RUN_TYPE == PerfRunType::PACK_ISOLATE || PERF_RUN_TYPE == PerfRunType::L1_CONGESTION)
         {
-            set_up_zero_dest_dvalid_handshake_for_pack();
+            auto cfg = (std::uint32_t volatile *)TENSIX_CFG_BASE;
+            cfg[PACK_DEST_DVALID_CTRL_wait_mask_ADDR32] = 0;
         }
-        else if constexpr (PERF_RUN_TYPE == PerfRunType::L1_TO_L1)
+        else
         {
             constexpr auto dest_producer = unpack_to_dest ? dest_dvalid_client::UNPACK : dest_dvalid_client::FPU;
             set_up_dest_dvalid_per_thread<dest_dvalid_client::PACK>({dest_producer, dest_dvalid_client::PACK});
         }
 
-        const ckernel::TensorShape tensor_shape = TENSOR_SHAPE_FROM_PARAMS(params);
-        tdma_descriptor_t tdma_desc =
-            ckernel::trisc::construct_tdma_desc(tensor_shape, L1_ADDRESS(buffer_Res[0]) /*l1_addr_16B*/, formats.pack_dst, buf_desc_id, formats.pack_src);
+        buffer_descriptor_u bd_val = {0};
+        bd_val.f.l1_addr_16B       = buffer_Res[0] / 16;
+        bd_val.f.format            = static_cast<std::uint8_t>(formats.pack_dst);
+        bd_val.f.x_dim             = TEST_FACE_C_DIM;
+        bd_val.f.y_dim             = TEST_FACE_R_DIM;
+        bd_val.f.z_dim             = num_faces;
+
+        tdma_descriptor_t tdma_desc;
+        tdma_desc.buf_desc        = bd_val;
+        tdma_desc.buf_desc_id     = buf_desc_id;
+        tdma_desc.reg_data_format = static_cast<std::uint8_t>(formats.pack_src);
 
         _configure_buf_desc_table_(tdma_desc.buf_desc_id, tdma_desc.buf_desc);
-        _llk_pack_hw_configure_<p_pacr::PACK0, is_fp32_dest_acc_en>(tdma_desc, ckernel::ReluConfig::none() /*relu_config*/);
-        _llk_pack_init_(buf_desc_id, tensor_shape, num_tiles_per_pack);
+        _llk_pack_hw_configure_<p_pacr::PACK0>(tdma_desc);
+        _llk_pack_init_(buf_desc_id, ckernel::DEFAULT_TENSOR_SHAPE, num_tiles_per_pack);
         PROFILER_SYNC();
     }
     {
         ZONE_SCOPED("TILE_LOOP")
-        const ckernel::TensorShape tensor_shape = TENSOR_SHAPE_FROM_PARAMS(params);
         if constexpr (PERF_RUN_TYPE == PerfRunType::MATH_ISOLATE || PERF_RUN_TYPE == PerfRunType::UNPACK_ISOLATE)
         {
         }
@@ -329,14 +317,14 @@ void run_kernel(RUNTIME_PARAMETERS params)
             // poisoning subsequent L1_TO_L1 on the persistent Quasar simulator.
             for (std::uint32_t loop = 0; loop < LOOP_FACTOR; loop++)
             {
-                _llk_pack_(0 /*start_math_dest_tile_idx*/, 0 /*start_l1_tile_idx*/, tensor_shape);
+                _llk_pack_(0, 0, ckernel::DEFAULT_TENSOR_SHAPE);
             }
         }
         else
         {
             for (std::uint32_t loop = 0; loop < LOOP_FACTOR; loop++)
             {
-                _llk_pack_(0 /*start_math_dest_tile_idx*/, 0 /*start_l1_tile_idx*/, tensor_shape);
+                _llk_pack_(0, 0, ckernel::DEFAULT_TENSOR_SHAPE);
                 _llk_pack_dest_dvalid_section_done_<dest_sync, is_fp32_dest_acc_en>();
             }
         }

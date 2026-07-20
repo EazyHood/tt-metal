@@ -165,14 +165,16 @@ PERF_UNPACK_REDUCE_COL_TILIZEA_STRIDED_COMBINATIONS = (
 )
 
 
-def unpack_reduce_col_tilizeA_strided_implied_math_formats():
+def unpack_reduce_col_tilizeA_strided_implied_math_formats(*, is_perf=False):
     return [ImpliedMathFormat.No]
 
 
 @pytest.mark.quasar
 @parametrize(
     formats_dest_acc_sync_unpack_reduce_col_tilizeA_strided_sel_dims=ALL_UNPACK_REDUCE_COL_TILIZEA_STRIDED_COMBINATIONS,
-    implied_math_format=unpack_reduce_col_tilizeA_strided_implied_math_formats,
+    implied_math_format=lambda: unpack_reduce_col_tilizeA_strided_implied_math_formats(
+        is_perf=False
+    ),
     run_types=[[PerfRunType.L1_TO_L1]],
     loop_factor=[1],
 )
@@ -268,6 +270,7 @@ def test_unpack_reduce_col_tilizeA_strided_quasar(
         ),
         "unpack_to_dest": False,
         "dest_acc": dest_acc,
+        "boot_mode": boot_mode,
     }
 
     if is_perf:
@@ -280,7 +283,6 @@ def test_unpack_reduce_col_tilizeA_strided_quasar(
             **test_config_kwargs,
             "templates": test_config_kwargs["templates"]
             + [PERF_RUN_TYPE(PerfRunType.L1_TO_L1)],
-            "boot_mode": boot_mode,
         },
     )
     res_from_L1 = configuration.run().result
