@@ -151,6 +151,7 @@ using KernelRiscMaskMap = std::unordered_map<const KernelSpec*, uint16_t>;
 // DFB name -> DFB ID map (for unpack_to_dest_mode indexing)
 using DFBNameToIdMap = std::unordered_map<DFBSpecName, uint32_t>;
 using SemaphoreNameToIdMap = std::unordered_map<SemaphoreSpecName, uint32_t>;
+using SemaphoreNameToScopeMap = std::unordered_map<SemaphoreSpecName, SemScope>;
 
 // ============================================================================
 // Basic Utility Helpers
@@ -2511,9 +2512,11 @@ tt::tt_metal::DataflowBufferBindingHandleMap MakeDataflowBufferBindingHandles(
     return out;
 }
 
-// Create map of accessor name -> logical Semaphore id
+// Create map of accessor name -> logical Semaphore id (+ the host-resolved physical scope)
 tt::tt_metal::SemaphoreBindingHandleMap MakeSemaphoreBindingHandles(
-    const KernelSpec& kernel_spec, const SemaphoreNameToIdMap& semaphore_name_to_id) {
+    const KernelSpec& kernel_spec,
+    const SemaphoreNameToIdMap& semaphore_name_to_id,
+    const SemaphoreNameToScopeMap& semaphore_name_to_scope) {
     tt::tt_metal::SemaphoreBindingHandleMap out;
     out.reserve(kernel_spec.semaphore_bindings.size());
     for (const auto& semaphore_binding : kernel_spec.semaphore_bindings) {
@@ -2524,7 +2527,10 @@ tt::tt_metal::SemaphoreBindingHandleMap MakeSemaphoreBindingHandles(
             kernel_spec.unique_id,
             semaphore_binding.semaphore_spec_name,
             id);
-        out.emplace(semaphore_binding.accessor_name, static_cast<uint16_t>(id));
+        // The host-resolved physical scope (ResolveSemaphoreScope) is baked into the kernel via the
+        // emitted SemAccessor<id, scope> token, so the kernel picks the mechanism through CTAD.
+        const SemScope scope = semaphore_name_to_scope.at(semaphore_binding.semaphore_spec_name);
+        out.emplace(semaphore_binding.accessor_name, tt::tt_metal::SemaphoreBindingHandle{static_cast<uint16_t>(id), scope});
     }
     return out;
 }
@@ -3015,6 +3021,7 @@ Program BuildProgramFromSpec(distributed::MeshDevice& mesh_device, const Program
     // Create Semaphores and build name -> ID map.
     // NOTE: Iterate over spec.semaphores to preserve user-provided deterministic ordering.
     SemaphoreNameToIdMap semaphore_name_to_id;
+    SemaphoreNameToScopeMap semaphore_name_to_scope;
     for (const auto& semaphore_spec : spec.semaphores) {
         const SemaphoreSpecName& semaphore_name = semaphore_spec.unique_id;
         const uint32_t init_value = semaphore_spec.advanced_options.initial_value;
@@ -3022,6 +3029,10 @@ Program BuildProgramFromSpec(distributed::MeshDevice& mesh_device, const Program
             to_node_range_set(semaphore_spec.target_nodes), init_value, CoreType::WORKER);
         program_impl->register_semaphore_spec_name(semaphore_name.get(), sem_id);
         semaphore_name_to_id[semaphore_name] = sem_id;
+        // Resolve the host intent (SemaphoreSpec.scope) to a device SemScope now, so it can be
+        // baked into every kernel that binds this semaphore. Contradictions already FATALed in
+        // ValidateProgramSpec; this call is the authoritative resolution.
+        semaphore_name_to_scope[semaphore_name] = ResolveSemaphoreScope(semaphore_spec);
     }
 
     // Create Kernels (arch-specific)
@@ -3029,11 +3040,12 @@ Program BuildProgramFromSpec(distributed::MeshDevice& mesh_device, const Program
         KernelSource kernel_src = MakeKernelSource(kernel_spec);
         const NodeRangeSet& node_ranges = collected.kernel_node_set.at(kernel_spec.unique_id);
 
-        // Make the accessor name -> DFB ID map for this kernel
-        const tt::tt_metal::DataflowBufferBindingHandleMap dfb_handles =
-            MakeDataflowBufferBindingHandles(kernel_spec, dfb_name_to_id);
-        const tt::tt_metal::SemaphoreBindingHandleMap semaphore_handles =
-            MakeSemaphoreBindingHandles(kernel_spec, semaphore_name_to_id);
+// Create map of accessor name -> logical Semaphore id (+ the host-resolved physical scope)
+tt::tt_metal::SemaphoreBindingHandleMap MakeSemaphoreBindingHandles(
+    const KernelSpec& kernel_spec,
+    const SemaphoreNameToIdMap& semaphore_name_to_id,
+    const SemaphoreNameToScopeMap& semaphore_name_to_scope) {
+    tt::tt_metal::SemaphoreBindingHandleMap out;
 
         // Resolve TensorBindings for this kernel:
         //  - pack each binding's pre-resolved CTA payload into the kernel's positional CTA buffer
