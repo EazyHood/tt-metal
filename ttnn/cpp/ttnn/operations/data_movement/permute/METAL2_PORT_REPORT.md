@@ -2,10 +2,9 @@
 
 ## Outcome
 
-**PORTED (all five factories)** — `permute` is fully on Metal 2.0 (`MetalV2FactoryConcept`, `create_program_artifacts`). Landed across three passes (see `METAL2_PORT_PLAN.md`):
-- **Pass 1** (committed `8f7154fa2fb`): `MultiCoreRowInvariant`, `MultiCoreBlockedGeneric` (row-major, own kernels).
-- **Pass 2**: `MultiCoreTiledGeneric` (tiled, own kernels; self-loop tilize CB + conditional `cb_pad`).
-- **Pass 3**: `MultiCoreTileInvariant`, `MultiCoreTileRowInvariant` (tiled, use three forked donor kernels; branch on `swap_hw` and `needs_padding`).
+**PORTED (all five factories)** — `permute` is fully on Metal 2.0 (`MetalV2FactoryConcept`, `create_program_artifacts`). Landed in two commits (see `METAL2_PORT_PLAN.md` for the three-pass structure):
+- **Commit `8f7154fa2fb` — pass 1:** `MultiCoreRowInvariant`, `MultiCoreBlockedGeneric` (row-major, own kernels).
+- **Commit `53be242ccab` — passes 2 + 3:** `MultiCoreTiledGeneric` (own kernels; self-loop tilize CB + conditional `cb_pad`), then `MultiCoreTileInvariant` and `MultiCoreTileRowInvariant` (use three forked donor kernels; branch on `swap_hw` and `needs_padding`).
 
 The device-op no longer has any `create_descriptor` factory; every `program_factory_t` variant is `MetalV2FactoryConcept`.
 
@@ -23,7 +22,7 @@ The device-op no longer has any `create_descriptor` factory; every `program_fact
 ## TTNN ProgramFactory
 
 ### Concept realized
-`MetalV2FactoryConcept` for both ported factories — as the audit chose. No deviation.
+`MetalV2FactoryConcept` for all five factories — as the audit chose. No deviation.
 
 ### Device-op-class edits
 - **Custom `compute_program_hash` deleted:** none — the op never had one (default reflection-based hash).
@@ -58,7 +57,7 @@ The device-op no longer has any `create_descriptor` factory; every `program_fact
 ## Friction
 
 ### Gaps
-- *(none observed in pass 1 — update if the build/tests surface any)*
+- *(none — no missing/stale doc answers surfaced across any of the five factories.)*
 
 ### Confusion
 - **KernelSpec designated-initializer field order.** `advanced_options` sits *after* `hw_config` in the `KernelSpec` struct, so the varargs-carrying kernels must list `.hw_config` before `.advanced_options` (C++ designated initializers must follow declaration order). Easy to get backwards when mentally grouping "schema-ish" fields together. Minor; noting in case the recipe wants a field-order reminder near the varargs guidance.

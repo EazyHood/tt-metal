@@ -135,7 +135,7 @@ All three are pass-3 concerns.
 
 - **Concept (inherited from audit):** `MetalV2FactoryConcept` (no op-owned tensors; single-program).
 - **Custom `compute_program_hash`:** none — nothing to delete.
-- **Implementation notes:** device-op class edits — the port changes each ported factory's declaration in `permute_device_operation.hpp` from `static ProgramDescriptor create_descriptor(...)` to `static ttnn::device_operation::ProgramArtifacts create_program_artifacts(...)`. The `program_factory_t` variant keeps unported factories on `create_descriptor` (mixed-concept variant is valid). No pybind `create_program_descriptor` exists (nanobind binds via `bind_function<"permute">`, [permute_nanobind.cpp:35](permute_nanobind.cpp#L35)) → no pybind removal. No custom-hash deletion. No pybind-hook-only factory parameter.
+- **Implementation notes:** device-op class edits — the port changes **all five** factory declarations in `permute_device_operation.hpp` from `static ProgramDescriptor create_descriptor(...)` to `static ttnn::device_operation::ProgramArtifacts create_program_artifacts(...)` (landed pass-by-pass; the intermediate passes left the not-yet-ported factories on `create_descriptor`, a legal mixed-concept variant, until the final pass completed the op). No pybind `create_program_descriptor` exists (nanobind binds via `bind_function<"permute">`, [permute_nanobind.cpp:35](permute_nanobind.cpp#L35)) → no pybind removal. No custom-hash deletion. No pybind-hook-only factory parameter.
 
 ---
 
@@ -158,9 +158,35 @@ All three are pass-3 concerns.
 - **WorkUnitSpecs:** one — `{READER, WRITER, COMPUTE}` over `all_cores`.
 - **Bindings:** READER → SRC_CB PRODUCER + INPUT; COMPUTE → SRC_CB CONSUMER, TILIZE_CB **PRODUCER + CONSUMER (self-loop)**, OUT_CB PRODUCER; WRITER → OUT_CB CONSUMER + OUTPUT.
 
-### Pass 2 / Pass 3 — deferred
+### Pass 2 — MultiCoreTiledGeneric
 
-Detailed spec shape for `MultiCoreTiledGeneric` (pass 2) and `MultiCoreTileInvariant` / `MultiCoreTileRowInvariant` (pass 3) is written when those passes begin. Structural preview in the Legacy Inventory above.
+- **KernelSpecs:** `READER`, `WRITER`, `COMPUTE`. 1:1 with legacy.
+- **DataflowBufferSpecs:** `SRC_CB` (c_0), `TILIZE_CB` (c_1), `OUT_CB` (c_2); `PAD_CB` (c_3) **only when `needs_y_padding`**. All `entry_size = input_page_size`, `num_entries = 2` (PAD_CB: `entry_size = face_w*elem`, `num_entries = 1`).
+- **TensorParameters:** `INPUT`, `OUTPUT`.
+- **WorkUnitSpecs:** one — `{READER, WRITER, COMPUTE}` over `all_cores`.
+- **Bindings:** READER → SRC_CB PRODUCER + INPUT (+ PAD_CB PRODUCER when padded); COMPUTE → SRC_CB CONSUMER, TILIZE_CB **PRODUCER + CONSUMER (self-loop)**, OUT_CB PRODUCER; WRITER → OUT_CB CONSUMER + OUTPUT (+ PAD_CB CONSUMER when padded).
+- **Conditional binding:** `PAD_CB` gated by the `NEEDS_Y_PADDING` define (promoted from the legacy `needs_y_padding` CTA); the padding RTAs (`start/end_padding_tile_idx`) are declared only when padded.
+
+### Pass 3 — MultiCoreTileInvariant
+
+- Two configs selected by `swap_hw`.
+- **KernelSpecs:** `READER` (own), `WRITER` (donor fork `writer_unary_..._metal2`), and `COMPUTE` (donor fork `transpose_wh_metal2`) **only when `swap_hw`**.
+- **DataflowBufferSpecs:** `SRC0` (c_0) always; `OUT16` (c_16) **only when `swap_hw`**. `entry_size = input_page_size`, `num_entries = 2`.
+- **TensorParameters:** `INPUT`, `OUTPUT`.
+- **WorkUnitSpecs:** one — `{READER, WRITER}` (+ `COMPUTE` when swap) over `all_cores`.
+- **Bindings:** READER → SRC0 PRODUCER + INPUT. WRITER → `OUTPUT_CB` CONSUMER + OUTPUT, where `OUTPUT_CB = swap_hw ? OUT16 : SRC0`. COMPUTE (swap) → SRC0 CONSUMER, OUT16 PRODUCER.
+- **Compute config:** `ComputeGen1Config{enable_32_bit_dest}`, `unpack_modes = {{SRC0, UnpackToDest}}` when Float32 (legacy `UnpackToDestFp32`).
+
+### Pass 3 — MultiCoreTileRowInvariant
+
+- Configs selected by `swap_hw` × `needs_padding`.
+- **KernelSpecs:** `READER` (donor fork `reader_unary_transpose_hc_..._metal2`), `WRITER` (own), `COMPUTE` (donor fork `transpose_wh_metal2`) **only when `swap_hw`**.
+- **DataflowBufferSpecs:** `SRC0` (c_0) always; `PAD` (c_1) **only when `needs_padding`**; `OUT16` (c_16) **only when `swap_hw`**.
+- **TensorParameters:** `INPUT`, `OUTPUT`.
+- **WorkUnitSpecs:** one — `{READER, WRITER}` (+ `COMPUTE` when swap) over `all_cores` (larger of the two work-split grids).
+- **Bindings:** READER → SRC0 PRODUCER + INPUT (+ PAD PRODUCER when padded). WRITER → `OUTPUT_CB` CONSUMER + OUTPUT (+ PAD CONSUMER when padded). COMPUTE (swap) → SRC0 CONSUMER, OUT16 PRODUCER.
+- **Conditional binding:** `PAD` gated by the `NEEDS_PADDING` define (promoted from the legacy `needs_padding` CTA); padding RTAs declared only when padded.
+- **Compute config:** as TileInvariant — `unpack_modes = {{SRC0, UnpackToDest}}` when Float32.
 
 ## Preserved Multiplicity
 
@@ -189,13 +215,23 @@ Detailed spec shape for `MultiCoreTiledGeneric` (pass 2) and `MultiCoreTileInvar
 | compute RTA slots 1,2 (`0u, 0u`) | dead padding slots | dropped (named `num_blocks` only) |
 | reader RTA 3..3+2N; writer RTA 3..3+3N | positional shape/stride/perm arrays (count = N CTA) | runtime varargs (2N / 3N) |
 
+### Pass 2/3 — tiled factories (summary)
+Same shape as above per factory: buffer-address RTAs → `TensorBinding`s (`tensor::input` / `tensor::output`); magic CB ids (positional, named, or hardcoded) → `DFBBinding`s (`dfb::…`); `TensorAccessorArgs` plumbing dropped; rank-length arrays → runtime varargs (2·rank or 3·rank); per-core scalars → named RTAs. Additional tiled-only drops: dead `page_size` CTAs (tiled generic reader/writer — unread by kernel); dead local `tile_bytes` (tiled row-invariant writer — `cb_id_out0` gone); dead `curr_addr` (tiled-invariant reader); metadata free-functions → object getters (`get_tile_size(cb)` → `dfb.get_tile_size()`, `get_local_cb_interface(...).fifo_page_size` → `dfb.get_entry_size()`); `needs_padding` CTA → `NEEDS_PADDING` / `NEEDS_Y_PADDING` define (conditional-binding gate); the donor writer's positional `cb_id_out` CTA → `DFBBinding`.
+
 ## Applied Patterns
-- **[Self-loop DFB binding](../../../../../../docs/source/tt-metalium/tt_metal/apis/host_apis/metal_2.0/ai/shared/port_patterns.md):** `TILIZE_CB` (c_1) on `MultiCoreBlockedGeneric` COMPUTE — bind PRODUCER **and** CONSUMER (single toucher: tilize produces, transpose consumes, both inside the one compute kernel). Same pattern will apply to `MultiCoreTiledGeneric` c_1 (pass 2).
-- **Pass DFB handles directly to LLKs / kernel-lib helpers:** BlockedGeneric compute passes `dfb::src_cb`/`dfb::tilize`/`dfb::out` into `compute_kernel_hw_startup`, `unary_op_init_common`, and `compute_kernel_lib::tilize<1, dfb::src_cb, dfb::tilize, …>` (NTTP position — `DFBAccessor::operator uint32_t()` is constexpr).
-- **Runtime varargs (kept, not promoted):** the rank-length shape/perm/stride arrays in the RM reader/writer kernels are genuine indexed-collection elements (loop count = `N`, a CTA) → `num_runtime_varargs`. Per-core scalars (`start_row/end_row`, `start_block/end_block`, `num_blocks`) stay named RTAs. Reported per recipe.
+- **[Self-loop DFB binding](../../../../../../docs/source/tt-metalium/tt_metal/apis/host_apis/metal_2.0/ai/shared/port_patterns.md):** the tilize intermediate CB (`c_1`) on `MultiCoreBlockedGeneric` **and** `MultiCoreTiledGeneric` COMPUTE — bound PRODUCER **and** CONSUMER (single toucher: tilize produces, transpose consumes, both inside the one compute kernel).
+- **Conditional / optional DFB bindings:** the padding CBs — `cb_pad` (`c_3`) in `MultiCoreTiledGeneric` (`NEEDS_Y_PADDING`) and `cb_pad` (`c_1`) in `MultiCoreTileRowInvariant` (`NEEDS_PADDING`) — are bound only on padded configs; the gating CTA is promoted to a preprocessor define that guards the `dfb::cb_pad` construction, the host binding, and the padding RTAs.
+- **Runtime-selected kernel set (`swap_hw`):** in `MultiCoreTileInvariant` / `MultiCoreTileRowInvariant`, the `transpose_wh` compute + `c_16` DFB exist only on the swap path, and the writer's output DFB switches `c_0`↔`c_16`; branched inside `create_program_artifacts`, kernel bodies config-agnostic.
+- **Cross-op donor kernels — fork with `_metal2` suffix:** `writer_unary_interleaved_start_id.cpp` (eltwise/unary), `transpose_wh.cpp` and `reader_unary_transpose_hc_interleaved_tiled_padding_aware.cpp` (transpose) forked alongside their legacy originals; the legacy copies stay for their still-legacy owners.
+- **Pass DFB handles directly to LLKs / kernel-lib helpers:** compute kernels pass `dfb::…` into `compute_kernel_hw_startup`, `unary_op_init_common`, `transpose_init`/`transpose_tile`/`pack_tile`, and `compute_kernel_lib::tilize<1, dfb::…, dfb::…, …>` (NTTP position — `DFBAccessor::operator uint32_t()` is constexpr).
+- **Runtime varargs (kept, not promoted):** rank-length shape/perm/stride arrays are genuine indexed-collection elements (loop count = a CTA) → `num_runtime_varargs`; per-core scalars (`start_*`/`end_*`, `num_blocks`, `NHtWt`, `num_pages`/`start_id`, padding indices) stay named RTAs.
 
 ## Deferred / Flagged
-- **unpack_modes (BlockedGeneric compute):** legacy uses `ComputeConfigDescriptor{.fp32_dest_acc_en=…}` with **no** `unpack_to_dest_mode` (Style B). Under Metal 2.0, when `enable_32_bit_dest = true` and a consumed DFB is `Float32`, an explicit `unpack_modes` entry is required. Plan: build `ComputeGen1Config{.enable_32_bit_dest = fp32_dest_acc_en}`; when `cb_data_format == Float32`, add `unpack_modes = {{SRC_CB, UnpackToSrc}, {TILIZE_CB, UnpackToSrc}}` (compute consumes both; legacy default → `UnpackToSrc`). Int32/UInt32 not required (issue #49936). Verify the exact set of consumed FP32 DFBs at construction.
-- **hw_config (DM):** all reader/writer configs are `ReaderConfigDescriptor{}` / `WriterConfigDescriptor{}` (defaults) → arch-agnostic `create_reader_datamovement_config(arch)` / `create_writer_datamovement_config(arch)`.
-- **hw_config (compute, BlockedGeneric):** Style B → `ComputeGen1Config`, `enable_32_bit_dest = fp32_dest_acc_en`; all other fields default (match legacy `ComputeConfigDescriptor` defaults). `bfp_pack_precision_mode` left default (legacy did not set `bfp8_pack_precise`).
-- **Pass 2/3 detail** (tiled compute configs with `unpack_to_dest_mode`, donor-kernel fork decisions, padding-CB endpoints) is planned when those passes begin.
+*(All resolved during the port — recorded here for the reviewer.)*
+- **hw_config (DM):** every reader/writer config is a `ReaderConfigDescriptor{}` / `WriterConfigDescriptor{}` default → arch-agnostic `create_reader_datamovement_config(arch)` / `create_writer_datamovement_config(arch)`.
+- **hw_config (compute):** Style B (direct `ComputeConfigDescriptor`) → `ComputeGen1Config`, `enable_32_bit_dest = fp32_dest_acc_en`; other fields default (match legacy). `bfp_pack_precision_mode` left default (legacy never set `bfp8_pack_precise`).
+- **unpack_modes — two distinct translations (resolved):** required for each Float32 DFB the compute kernel consumes when `enable_32_bit_dest = true`. The legacy **value** differs by compute family, so the ports differ:
+  - `MultiCoreBlockedGeneric` / `MultiCoreTiledGeneric` — legacy set no mode (`Default`) → `{{SRC_CB, UnpackToSrc}, {TILIZE_CB, UnpackToSrc}}` (consumes both).
+  - `MultiCoreTileInvariant` / `MultiCoreTileRowInvariant` — legacy set `unpack_to_dest_mode[c_0] = UnpackToDestFp32` → `{{SRC0, UnpackToDest}}` (consumes `c_0`).
+  Float32-only; Int32/UInt32 deferred (issue #49936).
+- **Cross-op donor forks (resolved):** three donor kernels forked with a `_metal2` suffix (see Applied Patterns / `METAL2_PORT_REPORT.md` — Handoff points). Sunset each when its owning op migrates.
