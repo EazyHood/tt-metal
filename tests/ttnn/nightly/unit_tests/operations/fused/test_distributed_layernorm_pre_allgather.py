@@ -1057,23 +1057,12 @@ def test_layernorm_pre_all_gather_welford_fp32_precision(device, inp_shape, offs
 
 @pytest.mark.parametrize("use_residual", [False, True])
 @pytest.mark.parametrize("inp_shape", [(1, 1, 32, 128)])
-@pytest.mark.xfail(
-    reason=(
-        "Issue #43946: non-Welford pre_all_gather still truncates Float32 through the FPU "
-        "mul/reduce (TF32) even after intermediate CBs follow fp32_dest_acc_en. Unlike "
-        "Welford (which uses UnpackToDestFp32 + SFPU), the default factory keeps FPU "
-        "paths, so Float32 intermediates alone can make accuracy worse (more TF32 ops "
-        "on wider CB data). Tight fp32 tolerances below are the target for the "
-        "follow-up Accurate/SFPU fix."
-    ),
-    strict=True,
-)
 def test_layernorm_pre_all_gather_non_welford_fp32_precision(device, inp_shape, use_residual):
     """Non-Welford Float32 pre_all_gather sum(x)/sum(x^2) vs fp64 reference.
 
     Sibling of ``test_layernorm_pre_all_gather_welford_fp32_precision``. Default
-    (non-Welford) factory with ``fp32_dest_acc_en=True``. CB hardcode fix alone is
-    insufficient for these tolerances; see the xfail reason.
+    (non-Welford) factory with ``fp32_dest_acc_en=True``; Float32 input uses
+    UnpackToDestFp32 + SFPU square/pre-add + Accurate reduce.
     """
     torch.manual_seed(0)
     torch_input = torch.randn(inp_shape, dtype=torch.float32)

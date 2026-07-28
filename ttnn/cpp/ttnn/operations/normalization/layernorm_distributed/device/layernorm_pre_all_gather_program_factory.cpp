@@ -60,11 +60,7 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGatherProgramFactory::create_desc
 
     tt::DataFormat in_data_format = tt::tt_metal::datatype_to_dataformat_converter(a.dtype());
     tt::DataFormat out_data_format = tt::tt_metal::datatype_to_dataformat_converter(output.dtype());
-    // Match Welford/post-allgather: keep intermediates in Float32 when DEST accumulates in
-    // FP32 so pack does not truncate stats (x^2 / fused a+b) back to bf16. See #43946.
     tt::DataFormat cb_data_format = fp32_dest_acc_en ? tt::DataFormat::Float32 : tt::DataFormat::Float16_b;
-    // Scaler must share the intermediate format; mixed Float16_b scaler + Float32 reduce
-    // input is a known accuracy footgun on the FPU MVMUL path.
     tt::DataFormat scaler_cb_data_format =
         cb_data_format == tt::DataFormat::Float32 ? tt::DataFormat::Float32 : tt::DataFormat::Float16_b;
     tt::DataFormat inb_data_format = tt::DataFormat::Invalid;
@@ -141,7 +137,12 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGatherProgramFactory::create_desc
     reader_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
     compute_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
 
+    // Same gate as Welford's welford_unpack_fp32_active: SFPU/Accurate only for Float32 input.
+    const bool fp32_accurate = (in_data_format == tt::DataFormat::Float32 && fp32_dest_acc_en);
     std::vector<uint32_t> compute_args = {Wt, block_size};
+    KernelDescriptor::NamedCompileTimeArgs compute_named_args = {
+        {"fp32_accurate", fp32_accurate ? 1u : 0u},
+    };
 
     const auto* compute_kernel_file =
         is_rmsnorm ? "ttnn/cpp/ttnn/operations/normalization/rmsnorm_distributed/device/kernels/compute/"
@@ -216,16 +217,30 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGatherProgramFactory::create_desc
     writer_kernel_desc.config = WriterConfigDescriptor{};
     program_descriptor.kernels.push_back(std::move(writer_kernel_desc));
 
-    // Compute kernel
+    // UnpackToDestFp32 on CBs consumed by copy_tile on the SFPU path (same as Welford).
+    std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
+        NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
+    if (fp32_accurate) {
+        unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_0)] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+        unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_6)] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+        if (fuse_pre_add) {
+            unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_3)] =
+                tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+            unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_5)] =
+                tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+        }
+    }
     compute_kernel_desc.kernel_source = compute_kernel_file;
     compute_kernel_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
     compute_kernel_desc.core_ranges = all_cores;
     compute_kernel_desc.compile_time_args = std::move(compute_args);
+    compute_kernel_desc.named_compile_time_args = std::move(compute_named_args);
     compute_kernel_desc.defines = KernelDescriptor::Defines(compute_defines.begin(), compute_defines.end());
     compute_kernel_desc.config = ComputeConfigDescriptor{
         .math_fidelity = math_fidelity,
         .fp32_dest_acc_en = fp32_dest_acc_en,
         .dst_full_sync_en = dst_full_sync_en,
+        .unpack_to_dest_mode = unpack_to_dest_mode,
         .math_approx_mode = math_approx_mode};
     program_descriptor.kernels.push_back(std::move(compute_kernel_desc));
 
@@ -325,11 +340,7 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGather2DProgramFactory::create_de
 
     tt::DataFormat in_data_format = tt::tt_metal::datatype_to_dataformat_converter(a.dtype());
     tt::DataFormat out_data_format = tt::tt_metal::datatype_to_dataformat_converter(output.dtype());
-    // Match Welford/post-allgather: keep intermediates in Float32 when DEST accumulates in
-    // FP32 so pack does not truncate stats (x^2 / fused a+b) back to bf16. See #43946.
     tt::DataFormat cb_data_format = fp32_dest_acc_en ? tt::DataFormat::Float32 : tt::DataFormat::Float16_b;
-    // Scaler must share the intermediate format; mixed Float16_b scaler + Float32 reduce
-    // input is a known accuracy footgun on the FPU MVMUL path.
     tt::DataFormat scaler_cb_data_format =
         cb_data_format == tt::DataFormat::Float32 ? tt::DataFormat::Float32 : tt::DataFormat::Float16_b;
     tt::DataFormat inb_data_format = tt::DataFormat::Invalid;
@@ -414,7 +425,12 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGather2DProgramFactory::create_de
     reader_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
     compute_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
 
+    // Same gate as Welford's welford_unpack_fp32_active: SFPU/Accurate only for Float32 input.
+    const bool fp32_accurate = (in_data_format == tt::DataFormat::Float32 && fp32_dest_acc_en);
     std::vector<uint32_t> compute_args = {tiles_per_core_x, tiles_per_core_y, block_size, cores_y};
+    KernelDescriptor::NamedCompileTimeArgs compute_named_args = {
+        {"fp32_accurate", fp32_accurate ? 1u : 0u},
+    };
 
     // Build runtime args per core.  Buffer base addresses are bound via
     // emplace_runtime_args() so the framework patches them on cache hits.
@@ -484,18 +500,32 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGather2DProgramFactory::create_de
     writer_kernel_desc.config = WriterConfigDescriptor{};
     program_descriptor.kernels.push_back(std::move(writer_kernel_desc));
 
-    // Compute kernel
+    // UnpackToDestFp32 on CBs consumed by copy_tile on the SFPU path (same as Welford).
+    std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
+        NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
+    if (fp32_accurate) {
+        unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_0)] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+        unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_6)] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+        if (fuse_pre_add) {
+            unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_3)] =
+                tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+            unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_5)] =
+                tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+        }
+    }
     compute_kernel_desc.kernel_source =
         "ttnn/cpp/ttnn/operations/normalization/layernorm_distributed/device/kernels/compute/"
         "layernorm_pre_allgather_2d.cpp";
     compute_kernel_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
     compute_kernel_desc.core_ranges = all_cores;
     compute_kernel_desc.compile_time_args = std::move(compute_args);
+    compute_kernel_desc.named_compile_time_args = std::move(compute_named_args);
     compute_kernel_desc.defines = KernelDescriptor::Defines(compute_defines.begin(), compute_defines.end());
     compute_kernel_desc.config = ComputeConfigDescriptor{
         .math_fidelity = math_fidelity,
         .fp32_dest_acc_en = fp32_dest_acc_en,
         .dst_full_sync_en = dst_full_sync_en,
+        .unpack_to_dest_mode = unpack_to_dest_mode,
         .math_approx_mode = math_approx_mode};
     program_descriptor.kernels.push_back(std::move(compute_kernel_desc));
 

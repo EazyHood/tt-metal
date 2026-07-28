@@ -13,6 +13,8 @@ For rmsnorm it computes E(x**2) and returns it as a one tile wide output
 #include "api/compute/bcast.h"
 #include "api/compute/eltwise_binary.h"
 #include "api/compute/layernorm.h"
+#include "api/compute/tile_move_copy.h"
+#include "api/compute/compute_kernel_api.h"
 #include "ttnn/cpp/ttnn/kernel_lib/reduce_helpers_compute.hpp"
 #include "ttnn/operations/normalization/kernel_util/compute/pre_add.h"
 
@@ -23,6 +25,10 @@ void kernel_main() {
     constexpr uint32_t Wt = get_compile_time_arg_val(1);
     constexpr uint32_t blk = get_compile_time_arg_val(2);
     constexpr uint32_t num_cores_y = get_compile_time_arg_val(3);
+    // Float32 input + fp32 DEST: SFPU square/pre-add + Accurate reduce (avoids FPU TF32).
+    constexpr bool fp32_accurate = get_named_compile_time_arg_val("fp32_accurate") != 0;
+    constexpr auto reduce_type = fp32_accurate ? PoolType::SUM : PoolType::AVG;
+    constexpr auto fp32_mode = fp32_accurate ? ReduceFp32Mode::Accurate : ReduceFp32Mode::Fast;
     bool is_merge_core = get_arg_val<uint32_t>(0);
 
     constexpr uint32_t onetile = 1;
@@ -52,31 +58,43 @@ void kernel_main() {
 
     for (uint32_t ncht = 0; ncht < NCHt; ncht++) {
         // Fuse pre-add: cb_inp_id = cb_in0_id + cb_res_id (no-op when !FUSE_PRE_ADD)
-        pre_add::one_row<FUSE_PRE_ADD>(cb_in0, cb_res, cb_inp, Wt, blk);
+        pre_add::one_row<FUSE_PRE_ADD, fp32_accurate>(cb_in0, cb_res, cb_inp, Wt, blk);
 
         /*
          * x**2
          */
         reconfig_data_format(cb_inp_id, cb_inp_id);
         pack_reconfig_data_format(cb_x2_id);
-        mul_tiles_init(cb_inp_id, cb_inp_id);
 
         for (uint32_t wt = 0; wt < Wt; wt += blk) {
             cb_inp.wait_front(wt + blk);  // cumulative wait
-
-            tile_regs_acquire();
-            for (uint32_t wtr = 0; wtr < blk; wtr++) {
-                mul_tiles(cb_inp_id, cb_inp_id, wt + wtr, wt + wtr, wtr);
-            }
-            tile_regs_commit();
-
             cb_x2.reserve_back(blk);
 
-            tile_regs_wait();
-            for (uint32_t wtr = 0; wtr < blk; wtr++) {
-                pack_tile(wtr, cb_x2_id, wt + wtr);
+            if constexpr (fp32_accurate) {
+                copy_tile_to_dst_init_short(cb_inp_id);
+                square_tile_init();
+                for (uint32_t wtr = 0; wtr < blk; wtr++) {
+                    tile_regs_acquire();
+                    copy_tile(cb_inp_id, wt + wtr, 0);
+                    square_tile(0);
+                    tile_regs_commit();
+                    tile_regs_wait();
+                    pack_tile(0, cb_x2_id, wt + wtr);
+                    tile_regs_release();
+                }
+            } else {
+                mul_tiles_init(cb_inp_id, cb_inp_id);
+                tile_regs_acquire();
+                for (uint32_t wtr = 0; wtr < blk; wtr++) {
+                    mul_tiles(cb_inp_id, cb_inp_id, wt + wtr, wt + wtr, wtr);
+                }
+                tile_regs_commit();
+                tile_regs_wait();
+                for (uint32_t wtr = 0; wtr < blk; wtr++) {
+                    pack_tile(wtr, cb_x2_id, wt + wtr);
+                }
+                tile_regs_release();
             }
-            tile_regs_release();
 
             cb_x2.push_back(blk);
         }
@@ -86,12 +104,14 @@ void kernel_main() {
          */
         // BulkWaitBulkPop: All Wt tiles already in CB (see cumulative wait above)
         compute_kernel_lib::reduce<
-            PoolType::AVG,
+            reduce_type,
             ReduceDim::REDUCE_ROW,
             cb_x2_id,
             cb_reduce_id,
             cb_out,
-            compute_kernel_lib::ReduceInputPolicy::BulkWaitBulkPop>(compute_kernel_lib::ReduceInputBlockShape::row(Wt));
+            compute_kernel_lib::ReduceInputPolicy::BulkWaitBulkPop,
+            compute_kernel_lib::ReduceDataFormatReconfigMode::INPUT_AND_OUTPUT,
+            fp32_mode>(compute_kernel_lib::ReduceInputBlockShape::row(Wt));
         cb_inp.pop_front(Wt);
         cb_reduce.pop_front(1);
     }
