@@ -49,8 +49,8 @@ def _k(extra: str) -> str:
 # Compression: ROW_MAJOR bf16 input -- the Blackhole production fast path (input tilized and
 # bf8-packed inside the op).
 _COMPRESS_WORKER = f"pytest {_WORKER}::test_cast_to_fp8_scale_values -k '{_k('bfloat16 and ROW_MAJOR')}'"
-# Decompression: bf16 output, fp32 scales (narrow_scales_to_bf16=False).
-_DECOMPRESS_WORKER = f"pytest {_WORKER}::test_cast_back_dequant -k '{_k('bfloat16 and False')}'"
+# Decompression: bf16 output, scales kept at fp32 (full-precision fp32/HiFi4 multiply).
+_DECOMPRESS_WORKER = f"pytest {_WORKER}::test_cast_back_dequant -k '{_k('bfloat16 and scales_kept_at_fp32')}'"
 
 
 @pytest.mark.parametrize(

@@ -241,7 +241,7 @@ def test_cast_to_fp8_power_of_two_scale_e4m3fn_boundary(device):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("narrow_scales_to_bf16", [False, True])
+@pytest.mark.parametrize("narrow_scales_to_bf16", [False, True], ids=["scales_kept_at_fp32", "scales_narrow_to_bf16"])
 @pytest.mark.parametrize("out_dtype", ["bfloat16", "float32"])
 @pytest.mark.parametrize("shape", SHAPES)
 def test_cast_back_dequant(device, out_dtype, shape, narrow_scales_to_bf16):
