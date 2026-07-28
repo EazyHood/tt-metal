@@ -46,6 +46,8 @@
 
 namespace ckernel {
 
+#ifdef ARCH_BLACKHOLE
+
 // Re-establish the weighted-reduce unpack/math/pack config for one chunk.
 //   weights_cb : [1, 32] tile (row 0 cols 0..7 = head weights)  -> SrcB
 //   qk_cb      : [8, 32] tile (two 8x16 faces)                  -> SrcA
@@ -202,5 +204,7 @@ inline void weighted_reduce_uninit(const std::uint32_t q_in_cb, const std::uint3
     constexpr std::uint32_t unpA_x_end = TILE_NUM_FACES * FACE_R_DIM * FACE_C_DIM - 1;
     TTI_SETADCXX(p_setadc::UNP_A, unpA_x_end, 0x0);
 }
+
+#endif
 
 }  // namespace ckernel

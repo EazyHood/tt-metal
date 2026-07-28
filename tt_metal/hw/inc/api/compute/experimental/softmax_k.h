@@ -8,14 +8,18 @@
 #include "api/compute/common.h"
 #include "api/debug/dprint.h"
 #ifdef TRISC_MATH
+#ifdef ARCH_BLACKHOLE
 #include "experimental/llk_math_unary_datacopy_softmax_k_api.h"
 #include "experimental/llk_sfpu/llk_math_softmax_k_api.h"
+#endif
 #endif
 #ifdef TRISC_UNPACK
 #include "llk_unpack_A.h"
 #endif
 
 namespace ckernel {
+
+#ifdef ARCH_BLACKHOLE
 
 ALWI void softmax_k_init(uint32_t icb) {
     UNPACK((llk_unpack_A_init<BroadcastType::SCALAR, false, EltwiseBinaryReuseDestType::NONE, false>(false, 1, icb)));
@@ -34,5 +38,7 @@ ALWI void softmax_k(uint32_t icb) {
     // Softmax
     MATH((sfpu::llk_math_sfpu_softmax_k<k>()));
 }
+
+#endif
 
 }  // namespace ckernel

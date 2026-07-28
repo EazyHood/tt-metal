@@ -7,11 +7,15 @@
 #include "api/compute/compute_kernel_api.h"
 #include "api/compute/common.h"
 #ifdef TRISC_MATH
+#ifdef ARCH_BLACKHOLE
 #include "experimental/llk_math_deepseek_moe_gate_eltwise_binary_api.h"  // fpu kernel which puts values into tile 0 of dest and values+bias into tile 2
 #include "experimental/llk_sfpu/llk_math_generic_moe_gate_topk_api.h"
 #endif
+#endif
 
 namespace ckernel {
+
+#ifdef ARCH_BLACKHOLE
 
 ALWI void generic_moe_gate_init(uint32_t icb0, uint32_t icb1) {
     UNPACK((llk_unpack_AB_init<BroadcastType::NONE>(icb0, icb1)));
@@ -45,5 +49,7 @@ ALWI void generic_moe_gate(uint32_t icb0, uint32_t icb1, uint32_t eps, uint32_t 
           zero_tail,
           full_sort>(eps, scale)));
 }
+
+#endif
 
 }  // namespace ckernel

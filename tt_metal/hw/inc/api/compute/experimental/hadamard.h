@@ -42,13 +42,19 @@
 #include "api/compute/reconfig_data_format.h"
 
 #ifdef TRISC_MATH
+#ifdef ARCH_BLACKHOLE
 #include "experimental/llk_math_hadamard_api.h"
 #endif
+#endif
 #ifdef TRISC_UNPACK
+#ifdef ARCH_BLACKHOLE
 #include "experimental/llk_unpack_hadamard_api.h"
+#endif
 #endif
 
 namespace ckernel {
+
+#ifdef ARCH_BLACKHOLE
 
 // clang-format off
 /**
@@ -118,5 +124,7 @@ ALWI void hadamard_h128_tile(
 }
 
 inline void hadamard_h128_uninit() { MATH((llk_math_hadamard_h128_uninit())); }
+
+#endif
 
 }  // namespace ckernel

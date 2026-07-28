@@ -11,6 +11,8 @@
 
 namespace ckernel {
 
+#ifndef ARCH_QUASAR
+
 ALWI void pack_rows_to_addr_init(uint32_t num_rows) { PACK((llk_pack_rows_init(num_rows))); }
 
 ALWI void pack_rows_to_addr(uint32_t idst, uint32_t l1_addr) { PACK((_llk_pack_rows_(idst, l1_addr - 1))); }
@@ -25,5 +27,7 @@ ALWI void pack_rows_to_addr_uninit() {
     // same primitive llk_pack_init<Default> uses to set ADDR_MOD_0/1/2.
     PACK((_llk_pack_configure_addrmod_<PackMode::Default>()));
 }
+
+#endif
 
 }  // namespace ckernel
