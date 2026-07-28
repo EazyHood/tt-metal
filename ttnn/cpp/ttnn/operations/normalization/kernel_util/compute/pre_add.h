@@ -20,11 +20,9 @@ namespace norm::kernel_util::compute::pre_add {
 /**
  * Perform fused pre-add for one H row: cb_inp = cb_in0 + cb_res for Wt tiles,
  * processed in blocks of blk tiles. Compile-time no-op when !fuse_pre_add.
- *
- * use_sfpu=true: copy_tile + add_binary_tile (full FP32 with UnpackToDestFp32).
- * use_sfpu=false: add_tiles (FPU / TF32).
+ * When unpack_fp32_active, uses SFPU copy_tile + add_binary_tile; else FPU add_tiles.
  */
-template <bool fuse_pre_add, bool use_sfpu = false>
+template <bool fuse_pre_add, bool unpack_fp32_active = false>
 ALWI void one_row(CircularBuffer& cb_in0, CircularBuffer& cb_res, CircularBuffer& cb_inp, uint32_t Wt, uint32_t blk) {
     if constexpr (!fuse_pre_add) {
         return;
@@ -35,7 +33,8 @@ ALWI void one_row(CircularBuffer& cb_in0, CircularBuffer& cb_res, CircularBuffer
         cb_in0.wait_front(blk);
         cb_res.wait_front(blk);
         cb_inp.reserve_back(blk);
-        if constexpr (use_sfpu) {
+        if constexpr (unpack_fp32_active) {
+            // SFPU path: copy_tile bypasses SrcA via UnpackToDestEn, preserving full FP32
             copy_tile_to_dst_init_short(cb_in0.get_cb_id());
             for (uint32_t wtr = 0; wtr < blk; wtr++) {
                 tile_regs_acquire();

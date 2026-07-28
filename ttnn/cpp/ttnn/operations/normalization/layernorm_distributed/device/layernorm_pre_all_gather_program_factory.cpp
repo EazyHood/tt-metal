@@ -137,11 +137,12 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGatherProgramFactory::create_desc
     reader_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
     compute_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
 
-    // Same gate as Welford's welford_unpack_fp32_active: SFPU/Accurate only for Float32 input.
-    const bool fp32_accurate = (in_data_format == tt::DataFormat::Float32 && fp32_dest_acc_en);
+    // UnpackToDestFp32 routes the unpack to DEST instead of SrcA, preserving FP32 precision.
+    // When active, square/pre-add use SFPU and reduce uses ReduceFp32Mode::Accurate (SUM).
+    const bool unpack_fp32_active = (in_data_format == tt::DataFormat::Float32 && fp32_dest_acc_en);
     std::vector<uint32_t> compute_args = {Wt, block_size};
     KernelDescriptor::NamedCompileTimeArgs compute_named_args = {
-        {"fp32_accurate", fp32_accurate ? 1u : 0u},
+        {"unpack_fp32_active", unpack_fp32_active ? 1u : 0u},
     };
 
     const auto* compute_kernel_file =
@@ -217,16 +218,18 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGatherProgramFactory::create_desc
     writer_kernel_desc.config = WriterConfigDescriptor{};
     program_descriptor.kernels.push_back(std::move(writer_kernel_desc));
 
-    // UnpackToDestFp32 on CBs consumed by copy_tile on the SFPU path (same as Welford).
+    // When unpack_fp32_active:
+    //   c_0, c_6 always (input / x^2 via copy_tile)
+    //   fuse_pre_add -> also c_5, c_3 (residual / fused inp)
     std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
         NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
-    if (fp32_accurate) {
+    if (unpack_fp32_active) {
         unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_0)] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
         unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_6)] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
         if (fuse_pre_add) {
-            unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_3)] =
-                tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
             unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_5)] =
+                tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+            unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_3)] =
                 tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
         }
     }
@@ -425,11 +428,12 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGather2DProgramFactory::create_de
     reader_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
     compute_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
 
-    // Same gate as Welford's welford_unpack_fp32_active: SFPU/Accurate only for Float32 input.
-    const bool fp32_accurate = (in_data_format == tt::DataFormat::Float32 && fp32_dest_acc_en);
+    // UnpackToDestFp32 routes the unpack to DEST instead of SrcA, preserving FP32 precision.
+    // When active, square/pre-add use SFPU and reduce uses ReduceFp32Mode::Accurate (SUM).
+    const bool unpack_fp32_active = (in_data_format == tt::DataFormat::Float32 && fp32_dest_acc_en);
     std::vector<uint32_t> compute_args = {tiles_per_core_x, tiles_per_core_y, block_size, cores_y};
     KernelDescriptor::NamedCompileTimeArgs compute_named_args = {
-        {"fp32_accurate", fp32_accurate ? 1u : 0u},
+        {"unpack_fp32_active", unpack_fp32_active ? 1u : 0u},
     };
 
     // Build runtime args per core.  Buffer base addresses are bound via
@@ -500,16 +504,18 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGather2DProgramFactory::create_de
     writer_kernel_desc.config = WriterConfigDescriptor{};
     program_descriptor.kernels.push_back(std::move(writer_kernel_desc));
 
-    // UnpackToDestFp32 on CBs consumed by copy_tile on the SFPU path (same as Welford).
+    // When unpack_fp32_active:
+    //   c_0, c_6 always (input / x^2 via copy_tile)
+    //   fuse_pre_add -> also c_5, c_3 (residual / fused inp)
     std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
         NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
-    if (fp32_accurate) {
+    if (unpack_fp32_active) {
         unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_0)] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
         unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_6)] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
         if (fuse_pre_add) {
-            unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_3)] =
-                tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
             unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_5)] =
+                tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+            unpack_to_dest_mode[static_cast<uint32_t>(tt::CBIndex::c_3)] =
                 tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
         }
     }

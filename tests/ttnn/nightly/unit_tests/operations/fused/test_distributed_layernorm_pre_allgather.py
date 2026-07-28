@@ -1060,9 +1060,9 @@ def test_layernorm_pre_all_gather_welford_fp32_precision(device, inp_shape, offs
 def test_layernorm_pre_all_gather_non_welford_fp32_precision(device, inp_shape, use_residual):
     """Non-Welford Float32 pre_all_gather sum(x)/sum(x^2) vs fp64 reference.
 
-    Sibling of ``test_layernorm_pre_all_gather_welford_fp32_precision``. Default
-    (non-Welford) factory with ``fp32_dest_acc_en=True``; Float32 input uses
-    UnpackToDestFp32 + SFPU square/pre-add + Accurate reduce.
+    Counterpart to ``test_layernorm_pre_all_gather_welford_fp32_precision`` for the
+    default (non-Welford) factory. Requires ``fp32_dest_acc_en=True`` so intermediate
+    CBs stay Float32 and UnpackToDestFp32 + SFPU Accurate reduce preserve full fp32.
     """
     torch.manual_seed(0)
     torch_input = torch.randn(inp_shape, dtype=torch.float32)

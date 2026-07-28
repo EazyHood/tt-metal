@@ -34,10 +34,10 @@ void kernel_main() {
     uint32_t NCHt = get_arg_val<uint32_t>(0);
     constexpr uint32_t Wt = get_compile_time_arg_val(0);
     constexpr uint32_t blk = get_compile_time_arg_val(1);
-    // Float32 input + fp32 DEST: SFPU square/pre-add + Accurate reduce (avoids FPU TF32).
-    constexpr bool fp32_accurate = get_named_compile_time_arg_val("fp32_accurate") != 0;
-    constexpr auto reduce_type = fp32_accurate ? PoolType::SUM : PoolType::AVG;
-    constexpr auto fp32_mode = fp32_accurate ? ReduceFp32Mode::Accurate : ReduceFp32Mode::Fast;
+    // True iff the factory configured UnpackToDestFp32 on input/scratch CBs.
+    constexpr bool unpack_fp32_active = get_named_compile_time_arg_val("unpack_fp32_active") != 0;
+    constexpr auto reduce_type = unpack_fp32_active ? PoolType::SUM : PoolType::AVG;
+    constexpr auto fp32_mode = unpack_fp32_active ? ReduceFp32Mode::Accurate : ReduceFp32Mode::Fast;
 
     constexpr uint32_t onetile = 1;
 
@@ -63,8 +63,7 @@ void kernel_main() {
     CircularBuffer cb_reduce(cb_reduce_id);
 
     for (uint32_t ncht = 0; ncht < NCHt; ncht++) {
-        // Fuse pre-add: cb_inp_id = cb_in0_id + cb_res_id (no-op when !FUSE_PRE_ADD)
-        pre_add::one_row<FUSE_PRE_ADD, fp32_accurate>(cb_in0, cb_res, cb_inp, Wt, blk);
+        pre_add::one_row<FUSE_PRE_ADD, unpack_fp32_active>(cb_in0, cb_res, cb_inp, Wt, blk);
 
         /*
          * x**2
@@ -75,7 +74,7 @@ void kernel_main() {
             cb_inp.wait_front(wt + blk);  // cumulative wait
             cb_x2.reserve_back(blk);
 
-            if constexpr (fp32_accurate) {
+            if constexpr (unpack_fp32_active) {
                 copy_tile_to_dst_init_short(cb_inp_id);
                 square_tile_init();
                 for (uint32_t wtr = 0; wtr < blk; wtr++) {
