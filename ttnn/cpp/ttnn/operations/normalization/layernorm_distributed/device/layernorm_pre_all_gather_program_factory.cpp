@@ -60,9 +60,13 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGatherProgramFactory::create_desc
 
     tt::DataFormat in_data_format = tt::tt_metal::datatype_to_dataformat_converter(a.dtype());
     tt::DataFormat out_data_format = tt::tt_metal::datatype_to_dataformat_converter(output.dtype());
-    tt::DataFormat cb_data_format = tt::DataFormat::Float16_b;
+    // Match Welford/post-allgather: keep intermediates in Float32 when DEST accumulates in
+    // FP32 so pack does not truncate stats (x^2 / fused a+b) back to bf16. See #43946.
+    tt::DataFormat cb_data_format = fp32_dest_acc_en ? tt::DataFormat::Float32 : tt::DataFormat::Float16_b;
+    // Scaler must share the intermediate format; mixed Float16_b scaler + Float32 reduce
+    // input is a known accuracy footgun on the FPU MVMUL path.
     tt::DataFormat scaler_cb_data_format =
-        in_data_format == tt::DataFormat::Float32 ? tt::DataFormat::Float32 : tt::DataFormat::Float16_b;
+        cb_data_format == tt::DataFormat::Float32 ? tt::DataFormat::Float32 : tt::DataFormat::Float16_b;
     tt::DataFormat inb_data_format = tt::DataFormat::Invalid;
     uint32_t inb_single_tile_size = 0;
     if (fuse_pre_add) {
@@ -321,9 +325,13 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGather2DProgramFactory::create_de
 
     tt::DataFormat in_data_format = tt::tt_metal::datatype_to_dataformat_converter(a.dtype());
     tt::DataFormat out_data_format = tt::tt_metal::datatype_to_dataformat_converter(output.dtype());
-    tt::DataFormat cb_data_format = tt::DataFormat::Float16_b;
+    // Match Welford/post-allgather: keep intermediates in Float32 when DEST accumulates in
+    // FP32 so pack does not truncate stats (x^2 / fused a+b) back to bf16. See #43946.
+    tt::DataFormat cb_data_format = fp32_dest_acc_en ? tt::DataFormat::Float32 : tt::DataFormat::Float16_b;
+    // Scaler must share the intermediate format; mixed Float16_b scaler + Float32 reduce
+    // input is a known accuracy footgun on the FPU MVMUL path.
     tt::DataFormat scaler_cb_data_format =
-        in_data_format == tt::DataFormat::Float32 ? tt::DataFormat::Float32 : tt::DataFormat::Float16_b;
+        cb_data_format == tt::DataFormat::Float32 ? tt::DataFormat::Float32 : tt::DataFormat::Float16_b;
     tt::DataFormat inb_data_format = tt::DataFormat::Invalid;
     uint32_t inb_single_tile_size = 0;
     if (fuse_pre_add) {

@@ -1053,3 +1053,92 @@ def test_layernorm_pre_all_gather_welford_fp32_precision(device, inp_shape, offs
         f"--- MEAN: {'PASSED' if mean_passed else 'FAILED'} ---\n{mean_msg}\n"
         f"--- VARIANCE: {'PASSED' if var_passed else 'FAILED'} ---\n{var_msg}"
     )
+
+
+@pytest.mark.parametrize("use_residual", [False, True])
+@pytest.mark.parametrize("inp_shape", [(1, 1, 32, 128)])
+@pytest.mark.xfail(
+    reason=(
+        "Issue #43946: non-Welford pre_all_gather still truncates Float32 through the FPU "
+        "mul/reduce (TF32) even after intermediate CBs follow fp32_dest_acc_en. Unlike "
+        "Welford (which uses UnpackToDestFp32 + SFPU), the default factory keeps FPU "
+        "paths, so Float32 intermediates alone can make accuracy worse (more TF32 ops "
+        "on wider CB data). Tight fp32 tolerances below are the target for the "
+        "follow-up Accurate/SFPU fix."
+    ),
+    strict=True,
+)
+def test_layernorm_pre_all_gather_non_welford_fp32_precision(device, inp_shape, use_residual):
+    """Non-Welford Float32 pre_all_gather sum(x)/sum(x^2) vs fp64 reference.
+
+    Sibling of ``test_layernorm_pre_all_gather_welford_fp32_precision``. Default
+    (non-Welford) factory with ``fp32_dest_acc_en=True``. CB hardcode fix alone is
+    insufficient for these tolerances; see the xfail reason.
+    """
+    torch.manual_seed(0)
+    torch_input = torch.randn(inp_shape, dtype=torch.float32)
+    torch_residual = torch.randn(inp_shape, dtype=torch.float32) if use_residual else None
+    combined = torch_input + torch_residual if use_residual else torch_input
+
+    kernel_config = ttnn.init_device_compute_kernel_config(
+        device.arch(),
+        math_fidelity=ttnn.MathFidelity.HiFi4,
+        math_approx_mode=False,
+        fp32_dest_acc_en=True,
+        packer_l1_acc=True,
+    )
+
+    tt_inp = ttnn.from_torch(
+        torch_input,
+        dtype=ttnn.float32,
+        device=device,
+        layout=ttnn.TILE_LAYOUT,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
+    residual_kwargs = {}
+    if use_residual:
+        residual_kwargs["residual_input_tensor"] = ttnn.from_torch(
+            torch_residual,
+            dtype=ttnn.float32,
+            device=device,
+            layout=ttnn.TILE_LAYOUT,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        )
+
+    tt_stats = ttnn_layer_norm_pre_all_gather(
+        tt_inp,
+        dtype=ttnn.float32,
+        compute_kernel_config=kernel_config,
+        **residual_kwargs,
+    )
+    actual = ttnn.to_torch(tt_stats)
+
+    # Non-Welford layout: col 0 = sum(x^2), col 32 = sum(x).
+    ref_sumx2 = combined.to(torch.float64).pow(2).sum(dim=-1)
+    ref_sumx = combined.to(torch.float64).sum(dim=-1)
+    tt_sumx2 = actual[..., 0].to(torch.float64).squeeze(-1)
+    tt_sumx = actual[..., 32].to(torch.float64).squeeze(-1)
+
+    sumx2_passed, sumx2_msg = assert_numeric_metrics(
+        ref_sumx2,
+        tt_sumx2,
+        rtol=1e-5,
+        atol=1e-5,
+        frobenius_threshold=1e-5,
+        pcc_threshold=0.99999,
+        assert_on_fail=False,
+    )
+    sumx_passed, sumx_msg = assert_numeric_metrics(
+        ref_sumx,
+        tt_sumx,
+        rtol=1e-5,
+        atol=1e-5,
+        frobenius_threshold=1e-5,
+        pcc_threshold=0.99999,
+        assert_on_fail=False,
+    )
+    assert sumx2_passed and sumx_passed, (
+        f"use_residual={use_residual}\n"
+        f"--- sum(x^2): {'PASSED' if sumx2_passed else 'FAILED'} ---\n{sumx2_msg}\n"
+        f"--- sum(x): {'PASSED' if sumx_passed else 'FAILED'} ---\n{sumx_msg}"
+    )
