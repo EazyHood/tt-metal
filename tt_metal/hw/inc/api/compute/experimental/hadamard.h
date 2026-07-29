@@ -22,8 +22,10 @@
 //            Routed to srcB face (0, 0).
 //
 //   in_cb  : single [16, 16] bfloat16 tile. The 128 real input values
-//            live in rows [0..8), cols [0..16); rows [8..16) must be
-//            zero. Routed to srcA face (0, 0).
+//            live in rows [0..8), cols [0..16). The unpack path zeroes
+//            rows [8..16) itself (ZEROSRC over the full srcA span, see
+//            llk_unpack_hadamard.h), so callers need not pad them.
+//            Routed to srcA face (0, 0).
 //
 //   out_cb : single [16, 16] bfp8 (bfloat8_b) tile. The 1x128 result
 //            lives in face 0 rows [0..8), cols [0..16). The caller
@@ -41,20 +43,18 @@
 #include "api/compute/common.h"
 #include "api/compute/reconfig_data_format.h"
 
-#ifdef TRISC_MATH
-#ifdef ARCH_BLACKHOLE
+// Blackhole-only: the H128 math/unpack LLKs live only in the Blackhole llk_lib.
+#if defined(TRISC_MATH) && defined(ARCH_BLACKHOLE)
 #include "experimental/llk_math_hadamard_api.h"
 #endif
-#endif
-#ifdef TRISC_UNPACK
-#ifdef ARCH_BLACKHOLE
+
+#if defined(TRISC_UNPACK) && defined(ARCH_BLACKHOLE)
 #include "experimental/llk_unpack_hadamard_api.h"
-#endif
 #endif
 
 namespace ckernel {
 
-#ifdef ARCH_BLACKHOLE
+#if defined(ARCH_BLACKHOLE)
 
 // clang-format off
 /**
@@ -67,7 +67,7 @@ namespace ckernel {
  *
  * | Argument         | Description                                                            | Type     | Valid Range            | Required              |
  * |------------------|------------------------------------------------------------------------|----------|------------------------|-----------------------|
- * | in_cb_id         | The 1x128 input vector tile (zero-padded into a [16, 16] tile)         | uint32_t | 0 to 31                | True                  |
+ * | in_cb_id         | The 1x128 input vector tile ([16, 16]; padding auto-zeroed on unpack)  | uint32_t | 0 to 31                | True                  |
  * | h16_cb_id        | The H_16 weight tile ([16, 16], H_16 fills the single face)            | uint32_t | 0 to 31                | True                  |
  * | out_cb_id        | The 1x128 output vector tile ([16, 16], result in rows 0..7)           | uint32_t | 0 to 31                | True                  |
  * | fp32_dest_acc_en | Whether to enable fp32 accumulation in dest                            | bool     | true/false             | False (default off)   |
@@ -100,7 +100,7 @@ ALWI void hadamard_h128_init(const uint32_t in_cb_id, const uint32_t h16_cb_id, 
  *
  * | Argument         | Description                                                  | Type     | Valid Range                                    | Required              |
  * |------------------|--------------------------------------------------------------|----------|------------------------------------------------|-----------------------|
- * | in_cb_id         | CB holding the zero-padded 1x128 input vector tile           | uint32_t | 0 to 31                                        | True                  |
+ * | in_cb_id         | CB holding the 1x128 input tile (padding auto-zeroed)        | uint32_t | 0 to 31                                        | True                  |
  * | h16_cb_id        | CB holding the H_16 weight tile (H_16 fills the face)        | uint32_t | 0 to 31                                        | True                  |
  * | in_tile_index    | Index of the input tile within in_cb_id                      | uint32_t | < CB size                                      | True                  |
  * | h16_tile_index   | Index of the H_16 tile within h16_cb_id                      | uint32_t | < CB size                                      | True                  |

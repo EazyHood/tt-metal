@@ -46,7 +46,9 @@
 
 namespace ckernel {
 
-#ifdef ARCH_BLACKHOLE
+// Blackhole-only: the body is written against Blackhole SFPU/packer encodings. The LLK headers included
+// above are arch-generic, so only the API surface needs gating.
+#if defined(ARCH_BLACKHOLE)
 
 // Re-establish the weighted-reduce unpack/math/pack config for one chunk.
 //   weights_cb : [1, 32] tile (row 0 cols 0..7 = head weights)  -> SrcB
@@ -55,7 +57,7 @@ namespace ckernel {
 inline void weighted_reduce_init_short(
     const std::uint32_t weights_cb, const std::uint32_t qk_cb, const std::uint32_t partial_cb) {
     // SrcA <- qk (operandA), SrcB <- weights (operandB).
-    reconfig_data_format<false, true>(qk_cb, weights_cb);
+    reconfig_data_format<SrcOrder::Regular, true>(qk_cb, weights_cb);
     UNPACK((cfg_reg_rmw_tensix<THCON_SEC0_REG2_Haloize_mode_RMW>(0)));
 }
 
@@ -198,10 +200,14 @@ inline void weighted_reduce_pack(const std::uint32_t partial_cb, const std::uint
 // Restore dataformats, and cfgs to what is needed for sdpa_custom_mm_block
 inline void weighted_reduce_uninit(const std::uint32_t q_in_cb, const std::uint32_t k_in_cb) {
     // SrcA <- k_in (operandA), SrcB <- q_in (operandB).
-    reconfig_data_format<false, true>(k_in_cb, q_in_cb);
+    reconfig_data_format<SrcOrder::Regular, true>(k_in_cb, q_in_cb);
     UNPACK((cfg_reg_rmw_tensix<THCON_SEC0_REG2_Haloize_mode_RMW>(1)));
     // UnpA unpacks full tiles
     constexpr std::uint32_t unpA_x_end = TILE_NUM_FACES * FACE_R_DIM * FACE_C_DIM - 1;
+    // NOTE: deliberately not wrapped in UNPACK(()), so this issues on all three TRISCs rather than only
+    // the unpacker -- unlike the cfg_reg_rmw_tensix above. That is how the blaze original behaves, and
+    // wrapping it here would change behavior, so it is left as-is: the fix has to land on the blaze side
+    // first (validated by PCC on dsa_indexer_sdpa) and be mirrored here.
     TTI_SETADCXX(p_setadc::UNP_A, unpA_x_end, 0x0);
 }
 

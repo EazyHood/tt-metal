@@ -7,19 +7,19 @@
 #include "api/compute/compute_kernel_api.h"
 #include "api/compute/common.h"
 #include "api/debug/dprint.h"
-#ifdef TRISC_MATH
-#ifdef ARCH_BLACKHOLE
+// Blackhole-only: the softmax_k datacopy/SFPU LLKs live only in the Blackhole llk_lib.
+#if defined(TRISC_MATH) && defined(ARCH_BLACKHOLE)
 #include "experimental/llk_math_unary_datacopy_softmax_k_api.h"
 #include "experimental/llk_sfpu/llk_math_softmax_k_api.h"
 #endif
-#endif
+
 #ifdef TRISC_UNPACK
 #include "llk_unpack_A.h"
 #endif
 
 namespace ckernel {
 
-#ifdef ARCH_BLACKHOLE
+#if defined(ARCH_BLACKHOLE)
 
 ALWI void softmax_k_init(uint32_t icb) {
     UNPACK((llk_unpack_A_init<BroadcastType::SCALAR, false, EltwiseBinaryReuseDestType::NONE, false>(false, 1, icb)));
@@ -29,6 +29,8 @@ ALWI void softmax_k_init(uint32_t icb) {
 
 template <int k = 8>
 ALWI void softmax_k(uint32_t icb) {
+    // The implementation handles at most 16 lanes, and the odd-tail mask computes 1u << (k - 1).
+    static_assert(k >= 1 && k <= 16, "softmax_k requires k in [1, 16]");
     // Unpack row0 to srcB
     UNPACK((llk_unpack_A<BroadcastType::SCALAR, false, EltwiseBinaryReuseDestType::NONE, false>(icb, 0)));
 

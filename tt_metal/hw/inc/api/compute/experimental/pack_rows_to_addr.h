@@ -11,11 +11,22 @@
 
 namespace ckernel {
 
+// Blackhole + Wormhole: the row-pack LLKs (llk_pack_rows.h) exist in both of those llk_libs but not in
+// tt_llk_quasar, so this is an exclusion guard rather than the ARCH_BLACKHOLE inclusion guard the other
+// experimental headers here use.
 #ifndef ARCH_QUASAR
 
 ALWI void pack_rows_to_addr_init(uint32_t num_rows) { PACK((llk_pack_rows_init(num_rows))); }
 
-ALWI void pack_rows_to_addr(uint32_t idst, uint32_t l1_addr) { PACK((_llk_pack_rows_(idst, l1_addr - 1))); }
+ALWI void pack_rows_to_addr(uint32_t idst, uint32_t l1_addr) {
+    // The llk_pack_rows wrapper guards dst_index against DEST capacity; this raw path bypasses the
+    // wrapper (it packs to an arbitrary L1 address, not a CB), so re-assert the same bound here.
+    // LLK_ASSERT compiles to an unevaluated sizeof() unless ENABLE_LLK_ASSERT is set.
+    PACK((LLK_ASSERT(
+        idst < get_pack_dest_max_tiles<DST_SYNC_MODE, DST_ACCUM_MODE>(),
+        "Dst tile exceeds packer destination capacity for the configured W-stride.")));
+    PACK((_llk_pack_rows_(idst, l1_addr - 1)));
+}
 
 ALWI void pack_rows_to_addr_uninit() {
     PACK((llk_pack_rows_uninit()));

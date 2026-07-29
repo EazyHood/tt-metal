@@ -219,5 +219,13 @@ inline void _llk_math_hadamard_h128_(std::uint32_t dst_index)
 
 inline void _llk_math_hadamard_h128_uninit_()
 {
-    // No state to restore.
+    // Intentionally empty -- but NOT because the init left no state behind. _llk_math_hadamard_h128_init_
+    // programs ADDR_MOD_0/1/2/7 and, under normalize, resets the shared SFPU config registers and writes
+    // kH128NormScale into LREG12 (vConstFloatPrgm0). Neither is undone here:
+    //   - addrmods: every math LLK reprograms the mods it needs in its own init (see the
+    //     _configure_addrmod_ call at the top of each), so a stale Hadamard mod is overwritten before use.
+    //   - LREG12: persists for the program lifetime by design; a later SFPU op that expects a different
+    //     vConstFloatPrgm0 must set it itself. That is a real cross-op coupling, tracked separately.
+    // Kept as a no-op so the API stays symmetric with the init and matches the blaze original; making it
+    // restore state would emit instructions and change behavior.
 }
