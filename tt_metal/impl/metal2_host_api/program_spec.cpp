@@ -148,8 +148,11 @@ using ComputeEngineMaskMap = std::unordered_map<const KernelSpec*, ComputeEngine
 //   Gen2: bits 0-7 = DM processors, bits 8-15 = Tensix compute engines
 using KernelRiscMaskMap = std::unordered_map<const KernelSpec*, uint16_t>;
 
-// DFB name -> DFB ID map (for unpack_to_dest_mode indexing)
+// DFB name -> program-wide DFB ID map (host-side identity: aliasing, borrowed bindings)
 using DFBNameToIdMap = std::unordered_map<DFBSpecName, uint32_t>;
+// DFB name -> device slot map. The slot is what a kernel sees (the dfb::<name> accessor value) and
+// what indexes the per-core config table, so it is what device-facing lowering must use.
+using DFBNameToSlotMap = std::unordered_map<DFBSpecName, uint32_t>;
 using SemaphoreNameToIdMap = std::unordered_map<SemaphoreSpecName, uint32_t>;
 
 // ============================================================================
@@ -2462,20 +2465,21 @@ ScratchpadBindingsForKernel ResolveScratchpadBindingsForKernel(
     return out;
 }
 
-// Create map of local accessor name -> logical DFB id
+// Create map of local accessor name -> DFB device slot. This is the value baked into the kernel's
+// dfb::<name> accessor, so it must be the device slot rather than the program-wide id.
 tt::tt_metal::DataflowBufferLocalAccessorHandleMap MakeDataflowBufferLocalAccessorHandles(
-    const KernelSpec& kernel_spec, const DFBNameToIdMap& dfb_name_to_id) {
+    const KernelSpec& kernel_spec, const DFBNameToSlotMap& dfb_name_to_slot) {
     tt::tt_metal::DataflowBufferLocalAccessorHandleMap out;
     out.reserve(kernel_spec.dfb_bindings.size());
     for (const auto& dfb_binding : kernel_spec.dfb_bindings) {
-        const uint32_t id = dfb_name_to_id.at(dfb_binding.dfb_spec_name);
+        const uint32_t slot = dfb_name_to_slot.at(dfb_binding.dfb_spec_name);
         TT_FATAL(
-            id <= std::numeric_limits<uint16_t>::max(),
-            "Kernel '{}' DFB '{}' logical id {} does not fit uint16_t",
+            slot <= std::numeric_limits<uint16_t>::max(),
+            "Kernel '{}' DFB '{}' device slot {} does not fit uint16_t",
             kernel_spec.unique_id,
             dfb_binding.dfb_spec_name,
-            id);
-        out.emplace(dfb_binding.accessor_name, static_cast<uint16_t>(id));
+            slot);
+        out.emplace(dfb_binding.accessor_name, static_cast<uint16_t>(slot));
     }
     return out;
 }
@@ -2671,22 +2675,24 @@ DataMovementConfig MakeGen1DataMovementConfig(const KernelSpec& kernel_spec) {
 // ----------------------------------------------------------------------------
 
 std::vector<UnpackToDestMode> BuildUnpackToDestModeVector(
-    const ComputeUnpackModes& user_modes, const DFBNameToIdMap& dfb_name_to_id) {
+    const ComputeUnpackModes& user_modes, const DFBNameToSlotMap& dfb_name_to_slot) {
     const uint32_t max_cbs = tt::tt_metal::hal::get_arch_num_circular_buffers();
     std::vector<UnpackToDestMode> unpack_modes(max_cbs, UnpackToDestMode::Default);
     for (const auto& [dfb_name, mode] : user_modes) {
-        uint32_t dfb_id = dfb_name_to_id.at(dfb_name);
+        // Indexed by device slot: this vector is consumed by the HLK alongside the CB-indexed data
+        // formats, which set_dfb_data_fmt_and_tile also keys by slot.
+        uint32_t dfb_slot = dfb_name_to_slot.at(dfb_name);
         // This TT_FATAL is unreachable, provided that validation wasn't skipped.
         TT_FATAL(
-            dfb_id < max_cbs,
-            "Internal Error: DFB '{}' has id {} which exceeds the JIT data-format "
+            dfb_slot < max_cbs,
+            "Internal Error: DFB '{}' has device slot {} which exceeds the JIT data-format "
             "slot count ({}); compute kernels cannot reference DFBs past this limit",
             dfb_name,
-            dfb_id,
+            dfb_slot,
             max_cbs);
         // Public UnpackMode -> internal UnpackToDestMode. UnpackToDest keeps full FP32 by
         // unpacking straight to Dest; UnpackToSrc is the SrcA/B path (the internal "Default").
-        unpack_modes[dfb_id] =
+        unpack_modes[dfb_slot] =
             (mode == UnpackMode::UnpackToDest) ? UnpackToDestMode::UnpackToDestFp32 : UnpackToDestMode::Default;
     }
     return unpack_modes;
@@ -2696,7 +2702,7 @@ std::vector<UnpackToDestMode> BuildUnpackToDestModeVector(
 // MakeGen1ComputeConfig: Create a ComputeConfig (WH/BH) from a KernelSpec
 // ----------------------------------------------------------------------------
 
-ComputeConfig MakeGen1ComputeConfig(const KernelSpec& kernel_spec, const DFBNameToIdMap& dfb_name_to_id) {
+ComputeConfig MakeGen1ComputeConfig(const KernelSpec& kernel_spec, const DFBNameToSlotMap& dfb_name_to_slot) {
     TT_FATAL(kernel_spec.is_compute_kernel(), "Expected a compute kernel");
     const auto& compute_config = std::get<ComputeHardwareConfig>(kernel_spec.hw_config);
 
@@ -2706,7 +2712,7 @@ ComputeConfig MakeGen1ComputeConfig(const KernelSpec& kernel_spec, const DFBName
         "ComputeGen1Config, generation mismatch, please provide the correctly typed hardware config.");
     const auto& gen1 = std::get<ComputeGen1Config>(compute_config);
 
-    std::vector<UnpackToDestMode> unpack_dst_modes = BuildUnpackToDestModeVector(gen1.unpack_modes, dfb_name_to_id);
+    std::vector<UnpackToDestMode> unpack_dst_modes = BuildUnpackToDestModeVector(gen1.unpack_modes, dfb_name_to_slot);
 
     return ComputeConfig{
         .math_fidelity = gen1.fpu_math_fidelity,
@@ -2746,7 +2752,7 @@ experimental::quasar::QuasarDataMovementConfig MakeQuasarDataMovementConfig(cons
 // ----------------------------------------------------------------------------
 
 experimental::quasar::QuasarComputeConfig MakeGen2ComputeConfig(
-    const KernelSpec& kernel_spec, const DFBNameToIdMap& dfb_name_to_id) {
+    const KernelSpec& kernel_spec, const DFBNameToSlotMap& dfb_name_to_slot) {
     TT_FATAL(kernel_spec.is_compute_kernel(), "Expected a compute kernel");
     const auto& compute_config = std::get<ComputeHardwareConfig>(kernel_spec.hw_config);
     TT_FATAL(
@@ -2755,7 +2761,7 @@ experimental::quasar::QuasarComputeConfig MakeGen2ComputeConfig(
         "ComputeGen2Config, generation mismatch, please provide the correctly typed hardware config.");
     const auto& gen2 = std::get<ComputeGen2Config>(compute_config);
 
-    std::vector<UnpackToDestMode> unpack_dst_modes = BuildUnpackToDestModeVector(gen2.unpack_modes, dfb_name_to_id);
+    std::vector<UnpackToDestMode> unpack_dst_modes = BuildUnpackToDestModeVector(gen2.unpack_modes, dfb_name_to_slot);
 
     return experimental::quasar::QuasarComputeConfig{
         .num_threads_per_cluster = kernel_spec.num_threads,
@@ -2935,6 +2941,7 @@ Program BuildProgramFromSpec(distributed::MeshDevice& mesh_device, const Program
     // NOTE: Iterate over spec.dataflow_buffers (not collected.dfb_endpoints) to ensure
     //       deterministic DFB ID assignment based on user-specified order.
     DFBNameToIdMap dfb_name_to_id;
+    DFBNameToSlotMap dfb_name_to_slot;
     for (const auto& dfb_spec : spec.dataflow_buffers) {
         const DFBSpecName& dfb_name = dfb_spec.unique_id;
         const auto& dfb_endpoint_info = collected.dfb_endpoints.at(dfb_name);
@@ -2948,6 +2955,7 @@ Program BuildProgramFromSpec(distributed::MeshDevice& mesh_device, const Program
         uint32_t dfb_id = program_impl->add_dataflow_buffer(collected.dfb_node_set.at(dfb_name), config);
         program_impl->register_dfb_spec_name(dfb_name.get(), dfb_id);
         dfb_name_to_id[dfb_name] = dfb_id;
+        dfb_name_to_slot[dfb_name] = program_impl->get_dataflow_buffer(dfb_id)->device_slot;
 
         // Borrowed-memory DFB: record the dfb_id ↔ TensorParamName binding so that
         // SetProgramRunArgs / UpdateTensorArgs can resolve and attach the actual L1 Buffer
@@ -3001,9 +3009,9 @@ Program BuildProgramFromSpec(distributed::MeshDevice& mesh_device, const Program
         KernelSource kernel_src = MakeKernelSource(kernel_spec);
         const NodeRangeSet& node_ranges = collected.kernel_node_set.at(kernel_spec.unique_id);
 
-        // Make the local accessor name -> DFB ID map for this kernel
+        // Make the local accessor name -> DFB device slot map for this kernel
         const tt::tt_metal::DataflowBufferLocalAccessorHandleMap dfb_handles =
-            MakeDataflowBufferLocalAccessorHandles(kernel_spec, dfb_name_to_id);
+            MakeDataflowBufferLocalAccessorHandles(kernel_spec, dfb_name_to_slot);
         const tt::tt_metal::SemaphoreLocalAccessorHandleMap semaphore_handles =
             MakeSemaphoreLocalAccessorHandles(kernel_spec, semaphore_name_to_id);
 
@@ -3059,7 +3067,7 @@ Program BuildProgramFromSpec(distributed::MeshDevice& mesh_device, const Program
                     tensor_binding_handles,
                     ta_bindings.crta_layout);
             } else {
-                auto config = MakeGen2ComputeConfig(kernel_spec, dfb_name_to_id);
+                auto config = MakeGen2ComputeConfig(kernel_spec, dfb_name_to_slot);
                 config.compile_args = ta_bindings.cta_words;
                 auto processors = GetComputeProcessorSet(ComputeEngineMask{(uint8_t)(risc_mask >> 8)});
                 kernel = std::make_shared<experimental::quasar::QuasarComputeKernel>(
@@ -3091,7 +3099,7 @@ Program BuildProgramFromSpec(distributed::MeshDevice& mesh_device, const Program
                     tensor_binding_handles,
                     ta_bindings.crta_layout);
             } else {
-                auto config = MakeGen1ComputeConfig(kernel_spec, dfb_name_to_id);
+                auto config = MakeGen1ComputeConfig(kernel_spec, dfb_name_to_slot);
                 config.compile_args = ta_bindings.cta_words;
                 kernel = std::make_shared<ComputeKernel>(
                     kernel_src,
