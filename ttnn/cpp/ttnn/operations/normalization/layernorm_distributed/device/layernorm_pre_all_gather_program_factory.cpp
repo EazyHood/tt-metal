@@ -77,6 +77,12 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGatherProgramFactory::create_desc
     log_debug(tt::LogOp, "in_data_format: {}", in_data_format);
     log_debug(tt::LogOp, "out_data_format: {}", out_data_format);
 
+    TT_FATAL(
+        !(in_data_format == tt::DataFormat::Float32 && !fp32_dest_acc_en),
+        "layer_norm_pre_all_gather with Float32 input requires fp32_dest_acc_en=true in the "
+        "compute kernel config; otherwise precision is silently lost in the unpacker format "
+        "conversion.");
+
     const uint32_t double_buffer_constant = 2;
     const uint32_t in0_tiles = Wt * double_buffer_constant;
     const uint32_t in1_tiles = 1;  // reduce scalar
@@ -137,9 +143,11 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGatherProgramFactory::create_desc
     reader_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
     compute_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
 
-    // UnpackToDestFp32 routes the unpack to DEST instead of SrcA, preserving FP32 precision.
-    // When active, square/pre-add use SFPU and reduce uses ReduceFp32Mode::Accurate (SUM).
-    const bool unpack_fp32_active = (in_data_format == tt::DataFormat::Float32 && fp32_dest_acc_en);
+    // Float32 + fp32_dest_acc_en + !math_approx_mode -> SFPU Accurate; else FPU.
+    // Quasar has no SFPU Accurate reduce; fall back to FPU.
+    const bool unpack_fp32_active =
+        (in_data_format == tt::DataFormat::Float32 && fp32_dest_acc_en && !math_approx_mode &&
+         device->arch() != tt::ARCH::QUASAR);
     std::vector<uint32_t> compute_args = {Wt, block_size};
     KernelDescriptor::NamedCompileTimeArgs compute_named_args = {
         {"unpack_fp32_active", unpack_fp32_active ? 1u : 0u},
@@ -218,9 +226,7 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGatherProgramFactory::create_desc
     writer_kernel_desc.config = WriterConfigDescriptor{};
     program_descriptor.kernels.push_back(std::move(writer_kernel_desc));
 
-    // When unpack_fp32_active:
-    //   c_0, c_6 always (input / x^2 via copy_tile)
-    //   fuse_pre_add -> also c_5, c_3 (residual / fused inp)
+    // UnpackToDestFp32 on input/scratch CBs when using the SFPU Accurate path.
     std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
         NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
     if (unpack_fp32_active) {
@@ -357,6 +363,12 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGather2DProgramFactory::create_de
     uint32_t single_tile_size = tt::tile_size(cb_data_format);
     uint32_t scaler_tile_size = tt::tile_size(scaler_cb_data_format);
 
+    TT_FATAL(
+        !(in_data_format == tt::DataFormat::Float32 && !fp32_dest_acc_en),
+        "layer_norm_pre_all_gather with Float32 input requires fp32_dest_acc_en=true in the "
+        "compute kernel config; otherwise precision is silently lost in the unpacker format "
+        "conversion.");
+
     const uint32_t double_buffer_constant = 2;
     const uint32_t in0_tiles = Wt * double_buffer_constant;
     const uint32_t in1_tiles = 1;  // reduce scalar
@@ -428,9 +440,11 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGather2DProgramFactory::create_de
     reader_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
     compute_defines["FUSE_PRE_ADD"] = fuse_pre_add ? "1" : "0";
 
-    // UnpackToDestFp32 routes the unpack to DEST instead of SrcA, preserving FP32 precision.
-    // When active, square/pre-add use SFPU and reduce uses ReduceFp32Mode::Accurate (SUM).
-    const bool unpack_fp32_active = (in_data_format == tt::DataFormat::Float32 && fp32_dest_acc_en);
+    // Float32 + fp32_dest_acc_en + !math_approx_mode -> SFPU Accurate; else FPU.
+    // Quasar has no SFPU Accurate reduce; fall back to FPU.
+    const bool unpack_fp32_active =
+        (in_data_format == tt::DataFormat::Float32 && fp32_dest_acc_en && !math_approx_mode &&
+         device->arch() != tt::ARCH::QUASAR);
     std::vector<uint32_t> compute_args = {tiles_per_core_x, tiles_per_core_y, block_size, cores_y};
     KernelDescriptor::NamedCompileTimeArgs compute_named_args = {
         {"unpack_fp32_active", unpack_fp32_active ? 1u : 0u},
@@ -504,9 +518,7 @@ tt::tt_metal::ProgramDescriptor LayerNormPreAllGather2DProgramFactory::create_de
     writer_kernel_desc.config = WriterConfigDescriptor{};
     program_descriptor.kernels.push_back(std::move(writer_kernel_desc));
 
-    // When unpack_fp32_active:
-    //   c_0, c_6 always (input / x^2 via copy_tile)
-    //   fuse_pre_add -> also c_5, c_3 (residual / fused inp)
+    // UnpackToDestFp32 on input/scratch CBs when using the SFPU Accurate path.
     std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
         NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
     if (unpack_fp32_active) {

@@ -25,7 +25,6 @@ void kernel_main() {
     constexpr uint32_t Wt = get_compile_time_arg_val(1);
     constexpr uint32_t blk = get_compile_time_arg_val(2);
     constexpr uint32_t num_cores_y = get_compile_time_arg_val(3);
-    // True iff the factory configured UnpackToDestFp32 on input/scratch CBs.
     constexpr bool unpack_fp32_active = get_named_compile_time_arg_val("unpack_fp32_active") != 0;
     constexpr auto reduce_type = unpack_fp32_active ? PoolType::SUM : PoolType::AVG;
     constexpr auto fp32_mode = unpack_fp32_active ? ReduceFp32Mode::Accurate : ReduceFp32Mode::Fast;

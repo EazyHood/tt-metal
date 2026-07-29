@@ -34,7 +34,6 @@ ALWI void one_row(CircularBuffer& cb_in0, CircularBuffer& cb_res, CircularBuffer
         cb_res.wait_front(blk);
         cb_inp.reserve_back(blk);
         if constexpr (unpack_fp32_active) {
-            // SFPU path: copy_tile bypasses SrcA via UnpackToDestEn, preserving full FP32
             copy_tile_to_dst_init_short(cb_in0.get_cb_id());
             for (uint32_t wtr = 0; wtr < blk; wtr++) {
                 tile_regs_acquire();
