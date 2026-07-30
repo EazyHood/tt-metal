@@ -5,6 +5,8 @@
 #include "ttnn/operations/data_movement/slice/device/slice_device_operation.hpp"
 #include "ttnn/operations/data_movement/slice/device/slice_program_factory_rm.hpp"
 
+#include <tt-metalium/experimental/program_descriptor_patching.hpp>
+
 #include <optional>
 #include <tuple>
 #include <tt-metalium/work_split.hpp>
@@ -422,6 +424,16 @@ std::vector<tt::tt_metal::DynamicRuntimeArg> slice_rm_reader_dynamic_args(
         dynamic_args.push_back(tt::tt_metal::DynamicRuntimeArg{0, core, 0, reader_base});
     }
     return dynamic_args;
+}
+
+void SliceRmProgramFactory::override_runtime_arguments(
+    tt::tt_metal::Program& program,
+    const SliceParams& args,
+    const SliceInputs& tensor_args,
+    Tensor& output,
+    const std::optional<ttnn::MeshCoordinate>& /*mesh_dispatch_coordinate*/) {
+    auto desc = create_descriptor(args, tensor_args, output);
+    tt::tt_metal::apply_descriptor_runtime_args(program, desc);
 }
 
 }  // namespace ttnn::prim

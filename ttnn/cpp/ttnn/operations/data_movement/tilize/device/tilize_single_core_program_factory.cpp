@@ -4,6 +4,8 @@
 
 #include "tilize_single_core_program_factory.hpp"
 
+#include <tt-metalium/experimental/program_descriptor_patching.hpp>
+
 #include <tt-metalium/constants.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/allocator.hpp>
@@ -177,6 +179,16 @@ ProgramDescriptor TilizeSingleCoreProgramFactory::create_descriptor(
     desc.kernels.push_back(std::move(compute_desc));
 
     return desc;
+}
+
+void TilizeSingleCoreProgramFactory::override_runtime_arguments(
+    tt::tt_metal::Program& program,
+    const TilizeParams& operation_attributes,
+    const TilizeInputs& tensor_args,
+    Tensor& tensor_return_value,
+    const std::optional<ttnn::MeshCoordinate>& /*mesh_dispatch_coordinate*/) {
+    auto desc = create_descriptor(operation_attributes, tensor_args, tensor_return_value);
+    tt::tt_metal::apply_descriptor_runtime_args(program, desc);
 }
 
 }  // namespace ttnn::prim

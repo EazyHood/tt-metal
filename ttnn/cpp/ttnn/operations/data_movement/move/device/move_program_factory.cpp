@@ -4,6 +4,8 @@
 
 #include "move_program_factory.hpp"
 
+#include <tt-metalium/experimental/program_descriptor_patching.hpp>
+
 #include "ttnn/operations/data_movement/copy/device/copy_device_operation.hpp"
 #include "ttnn/operations/data_movement/copy/device/copy_device_operation_types.hpp"
 
@@ -23,6 +25,16 @@ tt::tt_metal::ProgramDescriptor MoveProgramFactory::create_descriptor(
     const copy_args_t copy_args{input, std::make_optional(output)};
 
     return CopyDeviceOperation::SameMemoryConfig::create_descriptor(copy_attrs, copy_args, output);
+}
+
+void MoveProgramFactory::override_runtime_arguments(
+    tt::tt_metal::Program& program,
+    const MoveOperationAttributes& operation_attributes,
+    const MoveTensorArgs& tensor_args,
+    Tensor& tensor_return_value,
+    const std::optional<ttnn::MeshCoordinate>& /*mesh_dispatch_coordinate*/) {
+    auto desc = MoveProgramFactory::create_descriptor(operation_attributes, tensor_args, tensor_return_value);
+    tt::tt_metal::apply_descriptor_runtime_args(program, desc);
 }
 
 }  // namespace ttnn::prim

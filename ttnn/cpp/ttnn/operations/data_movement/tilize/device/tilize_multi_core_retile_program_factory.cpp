@@ -4,6 +4,8 @@
 
 #include "tilize_multi_core_retile_program_factory.hpp"
 
+#include <tt-metalium/experimental/program_descriptor_patching.hpp>
+
 #include "ttnn/operations/core/work_split/work_split_tilize.hpp"
 
 #include <algorithm>
@@ -288,6 +290,16 @@ ProgramDescriptor TilizeMultiCoreRetileProgramFactory::create_descriptor(
     }
 
     return desc;
+}
+
+void TilizeMultiCoreRetileProgramFactory::override_runtime_arguments(
+    tt::tt_metal::Program& program,
+    const TilizeParams& operation_attributes,
+    const TilizeInputs& tensor_args,
+    Tensor& tensor_return_value,
+    const std::optional<ttnn::MeshCoordinate>& /*mesh_dispatch_coordinate*/) {
+    auto desc = create_descriptor(operation_attributes, tensor_args, tensor_return_value);
+    tt::tt_metal::apply_descriptor_runtime_args(program, desc);
 }
 
 }  // namespace ttnn::prim

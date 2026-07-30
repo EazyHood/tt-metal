@@ -116,27 +116,13 @@ ProgramDescriptor MoveShardedProgramFactory::create_descriptor(
     return desc;
 }
 
-// Re-derive ALL per-dispatch state from the same create_descriptor the miss path uses (mirror
-// select_program_factory) and re-apply to the cached program. Supersedes get_dynamic + resolve_bindings.
-void MoveDeviceOperation::override_runtime_arguments(
+void MoveShardedProgramFactory::override_runtime_arguments(
     tt::tt_metal::Program& program,
-    const operation_attributes_t& operation_attributes,
-    const tensor_args_t& tensor_args,
-    tensor_return_value_t& tensor_return_value,
+    const MoveOperationAttributes& operation_attributes,
+    const MoveTensorArgs& tensor_args,
+    Tensor& tensor_return_value,
     const std::optional<ttnn::MeshCoordinate>& /*mesh_dispatch_coordinate*/) {
-    ProgramDescriptor desc;
-    switch (operation_attributes.move_op_parallelization_strategy) {
-        case MoveOpParallelizationStrategy::MULTI_CORE_SHARDED:
-            desc = MoveShardedProgramFactory::create_descriptor(operation_attributes, tensor_args, tensor_return_value);
-            break;
-        case MoveOpParallelizationStrategy::MULTI_CORE_OVERLAP:
-            desc = MoveOverlapProgramFactory::create_descriptor(operation_attributes, tensor_args, tensor_return_value);
-            break;
-        case MoveOpParallelizationStrategy::MULTI_CORE:
-            desc = MoveProgramFactory::create_descriptor(operation_attributes, tensor_args, tensor_return_value);
-            break;
-        default: TT_THROW("Invalid move operation parallelization strategy");
-    }
+    auto desc = MoveShardedProgramFactory::create_descriptor(operation_attributes, tensor_args, tensor_return_value);
     tt::tt_metal::apply_descriptor_runtime_args(program, desc);
 }
 

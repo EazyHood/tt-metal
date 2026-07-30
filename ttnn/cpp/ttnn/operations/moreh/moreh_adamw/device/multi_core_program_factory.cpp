@@ -52,7 +52,7 @@ AdamwWorkSplit compute_adamw_work_split(const Tensor& param_in) {
 
 }  // namespace
 
-ProgramDescriptor MorehAdamWDeviceOperation::create_descriptor(
+ProgramDescriptor MorehAdamWDeviceOperation::MorehAdamWProgramFactory::create_descriptor(
     const operation_attributes_t& operation_attributes,
     const tensor_args_t& tensor_args,
     tensor_return_value_t& tensor_return_value) {
@@ -347,7 +347,7 @@ ProgramDescriptor MorehAdamWDeviceOperation::create_descriptor(
     return desc;
 }
 
-void MorehAdamWDeviceOperation::override_runtime_arguments(
+void MorehAdamWDeviceOperation::MorehAdamWProgramFactory::override_runtime_arguments(
     tt::tt_metal::Program& program,
     const operation_attributes_t& operation_attributes,
     const tensor_args_t& tensor_args,

@@ -353,22 +353,6 @@ TilizeDeviceOperation::tensor_return_value_t TilizeDeviceOperation::create_outpu
     return create_device_tensor(compute_output_specs(args, tensor_args), tensor_args.input_tensor.device());
 }
 
-void TilizeDeviceOperation::override_runtime_arguments(
-    tt::tt_metal::Program& program,
-    const operation_attributes_t& operation_attributes,
-    const tensor_args_t& tensor_args,
-    tensor_return_value_t& tensor_return_value,
-    const std::optional<ttnn::MeshCoordinate>& /*mesh_dispatch_coordinate*/) {
-    // Re-derive the descriptor from the SAME factory the miss path picks (single source of truth) and
-    // re-apply its per-core args + tensor-backed CB/buffer addresses. Supersedes get_dynamic/resolve_bindings.
-    auto desc = std::visit(
-        [&](auto&& factory) {
-            return factory.create_descriptor(operation_attributes, tensor_args, tensor_return_value);
-        },
-        select_program_factory(operation_attributes, tensor_args));
-    tt::tt_metal::apply_descriptor_runtime_args(program, desc);
-}
-
 ttnn::Tensor tilize(
     const Tensor& input_tensor,
     const std::optional<MemoryConfig>& output_mem_config,
