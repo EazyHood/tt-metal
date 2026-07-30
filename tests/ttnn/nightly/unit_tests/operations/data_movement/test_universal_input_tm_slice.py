@@ -678,14 +678,41 @@ def test_slice_tile_subtile_height_sharded(shape, begins, ends, step, ncores, sh
     )
 
 
+# Issue #50714: F/H are the load-bearing HS→HS regression cases for SliceRmShardedProgramFactory; A covers the coalesce fast-path; G exercises the w_begin_aligned routing guard fallback to SliceRmProgramFactory.
 @pytest.mark.parametrize(
-    "shape, begins, ends, step, shard_shape",
+    "shape, begins, ends, step, in_shard, out_shard",
     [
-        pytest.param((1, 1, 52, 64), (0, 0, 0, 0), (1, 1, 26, 64), (1, 1, 1, 1), (13, 64), id="RM_hs_13x64_nontile"),
+        pytest.param(
+            (1, 1, 52, 64), (0, 0, 0, 0), (1, 1, 26, 64), (1, 1, 1, 1), (4, 13, 64), (2, 13, 64), id="A_coalesced"
+        ),
+        pytest.param(
+            (1, 1, 32, 64), (0, 0, 0, 16), (1, 1, 32, 32), (1, 1, 1, 1), (4, 8, 64), (4, 8, 16), id="F_w_begin_aligned"
+        ),
+        # W_in=52 at bf16: 104 B payload vs 112 B aligned page — exercises src_stride_bytes != stick_size_unpadded.
+        pytest.param(
+            (1, 1, 32, 52),
+            (0, 0, 0, 0),
+            (1, 1, 26, 52),
+            (1, 1, 1, 1),
+            (4, 8, 52),
+            (2, 13, 52),
+            id="H_w_unaligned_stride",
+        ),
+        pytest.param(
+            (1, 1, 32, 64),
+            (0, 0, 0, 1),
+            (1, 1, 32, 32),
+            (1, 1, 1, 1),
+            (4, 8, 64),
+            None,
+            id="G_w_begin_misaligned_routes_to_rm_fallback",
+        ),
     ],
 )
-def test_slice_row_major_height_sharded_nontile_aligned(shape, begins, ends, step, shard_shape, device):
-    imc = _explicit_height_shard_config(device, 4, shard_shape[0], shard_shape[1])
+def test_slice_row_major_height_sharded_nontile_aligned(shape, begins, ends, step, in_shard, out_shard, device):
+    imc = _explicit_height_shard_config(device, *in_shard)
+    # out_shard=None → L1_INTERLEAVED output; the routing guard must divert this case away from SliceRmShardedProgramFactory.
+    omc = _explicit_height_shard_config(device, *out_shard) if out_shard is not None else L1_INTERLEAVED
     _run_slice(
         shape,
         begins,
@@ -693,7 +720,7 @@ def test_slice_row_major_height_sharded_nontile_aligned(shape, begins, ends, ste
         step,
         ttnn.ROW_MAJOR_LAYOUT,
         imc,
-        L1_INTERLEAVED,
+        omc,
         ttnn.bfloat16,
         device,
     )
