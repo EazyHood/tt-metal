@@ -226,7 +226,7 @@ ttnn::device_operation::ProgramArtifacts MorehSoftmaxOperation::MorehSoftmaxHSma
         return KernelSpec{
             .unique_id = id,
             .source = "ttnn/cpp/ttnn/operations/moreh/moreh_softmax/device/kernels/moreh_softmax_h.cpp",
-            .compiler_options = {.defines = compute_defines},
+            .compiler_options = {.defines = compute_defines, .opt_level = tt::tt_metal::KernelBuildOptLevel::O3},
             .dfb_bindings = compute_dfb_bindings(),
             .compile_time_args = {{"N", N}, {"Ht", Ht}},
             .hw_config = make_compute_hw(),

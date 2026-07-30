@@ -474,7 +474,7 @@ SoftmaxDeviceOperation::SoftmaxProgramFactoryAttentionOptimized::create_program_
         .unique_id = COMPUTE,
         .source = std::string(SOFTMAX_KERNEL_PATH_ATTENTION) +
                   (use_large_kernel ? "/compute/softmax_large_tensor.cpp" : "/compute/softmax.cpp"),
-        .compiler_options = {.defines = compute_defines},
+        .compiler_options = {.defines = compute_defines, .opt_level = tt::tt_metal::KernelBuildOptLevel::O3},
         .dfb_bindings = compute_bindings,
         .runtime_arg_schema = {.runtime_arg_names = compute_rta_names},
         .hw_config = compute_hw,

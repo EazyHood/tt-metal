@@ -371,7 +371,7 @@ SoftmaxDeviceOperation::SoftmaxShardedProgramFactoryAttentionOptimized::create_p
     KernelSpec compute{
         .unique_id = COMPUTE,
         .source = std::string(SOFTMAX_KERNEL_PATH_ATTENTION) + "/compute/softmax_sharded.cpp",
-        .compiler_options = {.defines = compute_defines},
+        .compiler_options = {.defines = compute_defines, .opt_level = tt::tt_metal::KernelBuildOptLevel::O3},
         .dfb_bindings = compute_bindings,
         .compile_time_args =
             {{"block_h", program_config.block_h},
