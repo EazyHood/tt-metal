@@ -3325,12 +3325,11 @@ Program BuildProgramFromSpec(distributed::MeshDevice& mesh_device, const Program
         KernelSource kernel_src = MakeKernelSource(kernel_spec);
         const NodeRangeSet& node_ranges = collected.kernel_node_set.at(kernel_spec.unique_id);
 
-// Create map of accessor name -> logical Semaphore id (+ the host-resolved physical scope)
-tt::tt_metal::SemaphoreBindingHandleMap MakeSemaphoreBindingHandles(
-    const KernelSpec& kernel_spec,
-    const SemaphoreNameToIdMap& semaphore_name_to_id,
-    const SemaphoreNameToScopeMap& semaphore_name_to_scope) {
-    tt::tt_metal::SemaphoreBindingHandleMap out;
+        // Make the accessor name -> DFB ID map for this kernel
+        const tt::tt_metal::DataflowBufferBindingHandleMap dfb_handles =
+            MakeDataflowBufferBindingHandles(kernel_spec, dfb_name_to_id);
+        const tt::tt_metal::SemaphoreBindingHandleMap semaphore_handles =
+            MakeSemaphoreBindingHandles(kernel_spec, semaphore_name_to_id, semaphore_name_to_scope);
 
         // Resolve TensorBindings for this kernel:
         //  - pack each binding's pre-resolved CTA payload into the kernel's positional CTA buffer
