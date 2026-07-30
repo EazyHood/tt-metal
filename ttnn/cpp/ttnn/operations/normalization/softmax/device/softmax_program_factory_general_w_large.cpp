@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // NOTE: this factory borrows the shared moreh_softmax_w_large.cpp compute kernel, whose fp32_dest_acc_en
-// path once failed to JIT-compile (LLK addrmod "impossible constraint in 'asm'"). It is worked around by a
-// noinline split in that kernel — see its top-of-file WORKAROUND note. The proper
-// fix is upstream in the LLK (make the addrmod value a compile-time constant).
+// path must be built at -O3 (this factory sets the compute KernelSpec opt_level to O3, matching legacy).
+// At -O2 GCC fails to fold the LLK addrmod SETC16 inline-asm immediate in the larger fp32 TU and JIT aborts
+// with "impossible constraint in 'asm'"; at O3 it folds and no source workaround is needed.
 
 #include "softmax_device_operation.hpp"
 

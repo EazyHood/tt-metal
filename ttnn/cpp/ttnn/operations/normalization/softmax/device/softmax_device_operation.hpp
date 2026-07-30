@@ -30,9 +30,9 @@ struct SoftmaxDeviceOperation {
             const operation_attributes_t&, const tensor_args_t&, tensor_return_value_t&);
     };
     // Ported to Metal 2.0 (MetalV2FactoryConcept). See device/softmax_program_factory_general_w_large.cpp.
-    // NOTE: the shared w_large compute kernel once failed to JIT-compile in the fp32 path (LLK addrmod
-    // "impossible constraint in 'asm'"); it is worked around by a noinline split in that kernel. See its
-    // top-of-file WORKAROUND note. Proper fix is upstream in the LLK.
+    // NOTE: the shared w_large compute kernel must be built at -O3 in the fp32 path (the factory sets the
+    // compute KernelSpec opt_level to O3, matching legacy). At -O2 the LLK addrmod SETC16 asm immediate
+    // fails to fold ("impossible constraint in 'asm'"); at O3 no source workaround is needed.
     struct SoftmaxProgramFactoryGeneralWLarge {
         static ttnn::device_operation::ProgramArtifacts create_program_artifacts(
             const operation_attributes_t&, const tensor_args_t&, tensor_return_value_t&);

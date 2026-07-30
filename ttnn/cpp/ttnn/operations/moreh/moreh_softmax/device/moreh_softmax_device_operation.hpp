@@ -50,9 +50,10 @@ struct MorehSoftmaxOperation {
 
 // All five factories ported to Metal 2.0 (MetalV2FactoryConcept); each returns ProgramArtifacts
 // from create_program_artifacts. See device/softmax_*/softmax_*.cpp.
-// NOTE (w_large): the fp32_dest_acc_en path once hit an LLK addrmod "impossible constraint in 'asm'"
-// JIT failure; it is worked around by a noinline split in moreh_softmax_w_large.cpp (see that kernel's
-// top-of-file WORKAROUND note). Proper fix is upstream in the LLK.
+// NOTE (w_large): the fp32_dest_acc_en path must be built at -O3 (the w_large factory sets the compute
+// KernelSpec opt_level to O3, matching legacy). At -O2 GCC fails to fold the LLK addrmod SETC16 inline-asm
+// immediate in the larger fp32 TU and JIT aborts with "impossible constraint in 'asm'"; at O3 no workaround
+// is needed. See moreh_softmax_w_large.cpp's top-of-file note.
 #define DEFINE_SOFTMAX_FACTORY(factory_name)                                      \
     struct factory_name {                                                         \
         static ttnn::device_operation::ProgramArtifacts create_program_artifacts( \
