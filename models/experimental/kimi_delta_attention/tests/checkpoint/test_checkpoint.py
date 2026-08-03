@@ -15,7 +15,7 @@ from models.experimental.kimi_delta_attention.checkpoint import (
     resolve_kda_layer_shards,
 )
 from models.experimental.kimi_delta_attention.config import KDAConfig
-from models.experimental.kimi_delta_attention.tests.test_factory import random_weights
+from models.experimental.kimi_delta_attention.tests.utils import random_weights
 
 
 def _full_rank_config() -> KDAConfig:
@@ -26,7 +26,6 @@ def _full_rank_config() -> KDAConfig:
         head_v_dim=32,
         conv_kernel_size=4,
         norm_eps=1e-5,
-        chunk_size=4,
         use_full_rank_gate=True,
         gate_lower_bound=-5.0,
     )

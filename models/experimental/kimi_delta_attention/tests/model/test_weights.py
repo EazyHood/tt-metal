@@ -12,7 +12,7 @@ from models.common.utility_functions import comp_pcc, run_for_blackhole
 from models.demos.blackhole.qwen36.tt.tp_common import matmul_reduce_scatter_prefill
 from models.experimental.kimi_delta_attention.config import KDAConfig
 from models.experimental.kimi_delta_attention.reference import kda_forward_reference
-from models.experimental.kimi_delta_attention.tests.test_factory import random_weights
+from models.experimental.kimi_delta_attention.tests.utils import random_weights
 from models.experimental.kimi_delta_attention.tt.layer import KimiDeltaAttention
 from models.experimental.kimi_delta_attention.tt.weights import load_kda_weights
 from models.tt_transformers.tt.ccl import TT_CCL

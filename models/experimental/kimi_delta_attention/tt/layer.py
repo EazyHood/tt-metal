@@ -12,8 +12,8 @@ import torch
 import ttnn
 from models.demos.blackhole.qwen36.tt.gdn.fused_chunk import _FUSED_CHUNK_SIZE, build_fused_const_tiles
 from models.demos.blackhole.qwen36.tt.tp_common import matmul_reduce_scatter_prefill
+from models.experimental.gated_attention_gated_deltanet.tt.ttnn_delta_rule_ops import l2_norm_ttnn
 from models.experimental.kimi_delta_attention.config import KDAConfig, KDAProgramConfig
-from models.experimental.kimi_delta_attention.tt.recurrence import kda_prefill
 from models.experimental.kimi_delta_attention.tt.weights import KDAWeights, load_kda_weights
 from models.tt_transformers.tt.ccl import TT_CCL
 
@@ -73,6 +73,7 @@ class KimiDeltaAttention:
         )
         self.summary_group_chunks = summary_group_chunks
         self.output_projection_out_block_w = program_config.output_projection_out_block_w
+        self.recurrent_state_dtype = program_config.recurrent_state_dtype
         self.weights: KDAWeights = load_kda_weights(
             mesh_device,
             config,
@@ -153,7 +154,7 @@ class KimiDeltaAttention:
                 self.config.head_k_dim,
                 self.config.head_v_dim,
             ),
-            dtype=self.config.recurrent_state_dtype,
+            dtype=self.recurrent_state_dtype,
             layout=ttnn.TILE_LAYOUT,
             device=self.device,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
@@ -194,8 +195,8 @@ class KimiDeltaAttention:
             raise ValueError(f"recurrent_state shape {tuple(recurrent_state.shape)} != {expected_recurrent}")
         if tuple(convolution_state.shape) != expected_convolution:
             raise ValueError(f"convolution_state shape {tuple(convolution_state.shape)} != {expected_convolution}")
-        if recurrent_state.dtype != self.config.recurrent_state_dtype:
-            raise ValueError(f"recurrent_state dtype {recurrent_state.dtype} != {self.config.recurrent_state_dtype}")
+        if recurrent_state.dtype != self.recurrent_state_dtype:
+            raise ValueError(f"recurrent_state dtype {recurrent_state.dtype} != {self.recurrent_state_dtype}")
         if convolution_state.dtype != ttnn.bfloat16:
             raise ValueError(f"convolution_state dtype {convolution_state.dtype} != {ttnn.bfloat16}")
         self.recurrent_state = recurrent_state
@@ -358,23 +359,38 @@ class KimiDeltaAttention:
         inputs: _KDAInputs,
     ) -> tuple[ttnn.Tensor, ttnn.Tensor]:
         """Run the KDA recurrence and return its raw output and updated state."""
-        config = self.config
         assert self.recurrent_state is not None
-        output, new_recurrent_state = kda_prefill(
-            inputs.q,
-            inputs.k,
+        q, k = inputs.q, inputs.k
+        key_dim = q.shape[-1] // inputs.beta.shape[-1] if len(q.shape) == 3 else q.shape[-1]
+        if len(q.shape) == 4:
+            q = l2_norm_ttnn(q, dim=-1)
+            k = l2_norm_ttnn(k, dim=-1)
+        output, new_recurrent_state = ttnn.transformer.chunk_kda(
+            q,
+            k,
             inputs.v,
             inputs.decay,
             inputs.beta,
-            self.recurrent_state,
-            self.chunk_const_tiles,
+            scale=key_dim**-0.5,
+            initial_state=self.recurrent_state,
+            output_final_state=True,
+            output_head_major=len(q.shape) == 3,
+            chunk_size=32,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            eye=self.chunk_const_tiles[0],
+            tril=self.chunk_const_tiles[1],
+            ones=self.chunk_const_tiles[2],
+            masks=self.chunk_const_tiles[3],
             summary_group_chunks=self.summary_group_chunks,
             sequence_parallel_axis=(self.sequence_parallel_axis if self.sequence_parallel_size > 1 else None),
             affine_identity=self.affine_identity,
             affine_zero=self.affine_zero,
         )
-        if new_recurrent_state.dtype != config.recurrent_state_dtype:
-            new_recurrent_state = ttnn.typecast(new_recurrent_state, config.recurrent_state_dtype)
+        assert new_recurrent_state is not None
+        if len(q.shape) == 4:
+            output = ttnn.to_layout(output, ttnn.TILE_LAYOUT, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+        if new_recurrent_state.dtype != self.recurrent_state_dtype:
+            new_recurrent_state = ttnn.typecast(new_recurrent_state, self.recurrent_state_dtype)
         return output, new_recurrent_state
 
     def _kda_rms_norm(

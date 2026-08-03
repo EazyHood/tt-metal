@@ -21,8 +21,6 @@ class KDAConfig:
     head_v_dim: int
     conv_kernel_size: int
     norm_eps: float
-    recurrent_state_dtype: ttnn.DataType = ttnn.float32
-    chunk_size: int = 64
     use_full_rank_gate: bool = False
     gate_lower_bound: float | None = None
 
@@ -33,17 +31,12 @@ class KDAConfig:
             "head_k_dim": self.head_k_dim,
             "head_v_dim": self.head_v_dim,
             "conv_kernel_size": self.conv_kernel_size,
-            "chunk_size": self.chunk_size,
         }
         for name, value in positive.items():
             if value <= 0:
                 raise ValueError(f"{name} must be positive, got {value}")
         if self.norm_eps <= 0:
             raise ValueError(f"norm_eps must be positive, got {self.norm_eps}")
-        if self.recurrent_state_dtype not in (ttnn.float32, ttnn.bfloat16):
-            raise ValueError(
-                "recurrent_state_dtype must be ttnn.float32 or ttnn.bfloat16, " f"got {self.recurrent_state_dtype}"
-            )
         if self.gate_lower_bound is not None and not -5.0 <= self.gate_lower_bound < 0.0:
             raise ValueError(f"gate_lower_bound must be in [-5, 0), got {self.gate_lower_bound}")
 
@@ -93,6 +86,7 @@ class KDAProgramConfig:
 
     summary_group_chunks: int = 8
     output_projection_out_block_w: int | None = None
+    recurrent_state_dtype: ttnn.DataType = ttnn.float32
 
     def __post_init__(self) -> None:
         if self.summary_group_chunks <= 0:
@@ -100,4 +94,8 @@ class KDAProgramConfig:
         if self.output_projection_out_block_w is not None and self.output_projection_out_block_w <= 0:
             raise ValueError(
                 "output_projection_out_block_w must be positive, " f"got {self.output_projection_out_block_w}"
+            )
+        if self.recurrent_state_dtype not in (ttnn.float32, ttnn.bfloat16):
+            raise ValueError(
+                "recurrent_state_dtype must be ttnn.float32 or ttnn.bfloat16, " f"got {self.recurrent_state_dtype}"
             )

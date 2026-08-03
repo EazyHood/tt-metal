@@ -8,7 +8,11 @@ import torch
 import ttnn
 from models.common.utility_functions import comp_pcc, run_for_blackhole
 from models.experimental.kimi_delta_attention.reference import kda_forward_reference
-from models.experimental.kimi_delta_attention.tests.test_factory import make_config, random_weights
+from models.experimental.kimi_delta_attention.tests.utils import (
+    make_config,
+    make_program_config,
+    random_weights,
+)
 from models.experimental.kimi_delta_attention.tt.layer import KimiDeltaAttention
 
 pytestmark = [
@@ -141,7 +145,7 @@ def test_segmented_prefill_cache_continuity(device: ttnn.Device) -> None:
 
 @pytest.mark.parametrize("recurrent_state_dtype", [ttnn.float32, ttnn.bfloat16])
 def test_external_state_is_updated_in_place(device: ttnn.Device, recurrent_state_dtype: ttnn.DataType) -> None:
-    config = make_config(recurrent_state_dtype=recurrent_state_dtype)
+    config = make_config()
     weights = random_weights(config)
     hidden = torch.randn(
         1,
@@ -151,7 +155,12 @@ def test_external_state_is_updated_in_place(device: ttnn.Device, recurrent_state
     ).to(torch.bfloat16)
     golden_output, golden_state = kda_forward_reference(hidden, weights, config)
 
-    layer = KimiDeltaAttention(device, config, weights)
+    layer = KimiDeltaAttention(
+        device,
+        config,
+        weights,
+        program_config=make_program_config(recurrent_state_dtype=recurrent_state_dtype),
+    )
     layer.reset_state(batch_size=1)
     assert layer.recurrent_state is not None
     assert layer.convolution_state is not None
