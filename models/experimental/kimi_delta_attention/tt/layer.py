@@ -173,6 +173,14 @@ class KimiDeltaAttention:
             fp32_dest_acc_en=True,
             packer_l1_acc=True,
         )
+        # Real-K3 component A/B: output-projection HiFi2 retained PCC >=0.999987 for every LoudBox
+        # layout and improved median component latency by 3.580%-5.165%.
+        self.output_projection_compute_config = ttnn.init_device_compute_kernel_config(
+            mesh_device.arch(),
+            math_fidelity=program_config.output_projection_math_fidelity,
+            fp32_dest_acc_en=True,
+            packer_l1_acc=True,
+        )
 
     @property
     def _convolution_width(self) -> int:
@@ -529,7 +537,7 @@ class KimiDeltaAttention:
                     weights.output_projection.shape[-1],
                     self.output_projection_out_block_w,
                 ),
-                compute_kernel_config=self.compute_config,
+                compute_kernel_config=self.output_projection_compute_config,
             )
             cluster_axis = None if self.sequence_parallel_size == 1 else self.tensor_parallel_axis
             topology = ttnn.get_usable_topology(output, topology=ttnn.Topology.Ring, cluster_axis=cluster_axis)
@@ -548,7 +556,7 @@ class KimiDeltaAttention:
                 output,
                 weights.output_projection,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                compute_kernel_config=self.compute_config,
+                compute_kernel_config=self.output_projection_compute_config,
             )
         return output
 

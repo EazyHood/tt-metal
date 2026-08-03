@@ -93,6 +93,7 @@ class KDAProgramConfig:
     grouped_scan_output_dtype: ttnn.DataType = ttnn.float32
     grouped_scan_math_fidelity: ttnn.MathFidelity = ttnn.MathFidelity.HiFi4
     gated_rms_output_dtype: ttnn.DataType = ttnn.float32
+    output_projection_math_fidelity: ttnn.MathFidelity = ttnn.MathFidelity.HiFi4
 
     def __post_init__(self) -> None:
         if self.p2p_num_links <= 0:
