@@ -119,9 +119,9 @@ PrepWorkDist distribute_prep(CoreCoord grid, uint32_t total, uint32_t core_cap) 
     return d;
 }
 
-// The scan factorizes over V, but splitting V duplicates every V-independent tensor read and matmul setup.
-// For Kimi KDA (Vt=4), one full-V core per head is 36% faster than two V-shards. Keep value
-// splitting only as an explicit A/B knob until a larger-V crossover is measured.
+// The scan factorizes over V. Preserve scalar GDN's established maximum splitting, while the measured
+// KDA crossover favors finest-grain splitting at <=8 local heads and one full-V core per head at >=16.
+// Keep the KDA production policy local to vector-gate calls.
 struct ScanWorkDist {
     std::vector<CoreCoord> cores;
     std::vector<uint32_t> head;  // head index per core
@@ -134,11 +134,16 @@ struct ScanWorkDist {
 ScanWorkDist distribute_scan(CoreCoord grid, uint32_t BH, uint32_t Vt, bool vector_gate) {
     const uint32_t ncores = grid.x * grid.y;
     TT_FATAL(BH <= ncores, "num_heads {} exceeds compute cores {}", BH, ncores);
-    // The measured KDA crossover favors finest-grain V splitting at <=8 local heads and complete
-    // V blocks at >=16. Scalar GDN retains its established full-V mapping.
-    const char* split_env = std::getenv("QWEN_GDN_SCAN_VALUE_SPLIT");
-    const bool value_split = split_env ? split_env[0] == '1' : (vector_gate && BH <= 8);
     uint32_t NV = 1;
+    bool value_split = false;
+    if (vector_gate) {
+        value_split = BH <= 8;
+    } else {
+        // Preserve origin/main Qwen behavior and its existing serial A/B override.
+        const char* serial_env = std::getenv("QWEN_GDN_SCAN_SERIAL");
+        const bool force_serial = serial_env && serial_env[0] == '1';
+        value_split = !force_serial;
+    }
     if (value_split) {
         for (uint32_t cand = Vt; cand >= 1; cand--) {  // cand==1 always satisfies
             if (Vt % cand == 0 && BH * cand <= ncores) {
@@ -209,7 +214,7 @@ uint32_t chunk_gdn_prep_cb_size_bytes(
     add(cv, 1, output_format(0));                                   // vbeta
     add(ck);                                                        // kbeta
     add(cv, 2, bf16);                                               // out
-    add(std::max(cv, 3u));                                          // u
+    add(vector_gate ? std::max(cv, 3u) : cv);                       // u
     add(ck, 1, output_format(1));                                   // w
     add(ck, 1, output_format(2));                                   // qdecay
     add(cc, 1, output_format(3));                                   // intra
@@ -288,7 +293,7 @@ tt::tt_metal::ProgramDescriptor ChunkGdnPrepProgramFactory::create_descriptor(
     add_cb(pcb::vbeta, cv, 1, output_df(0));
     add_cb(pcb::kbeta, ck);
     add_cb(pcb::out, cv, 2, df_io);
-    add_cb(pcb::u, std::max(cv, 3u));  // startup pacing tiles; then unused scratch
+    add_cb(pcb::u, attrs.vector_gate ? std::max(cv, 3u) : cv);  // KDA startup pacing; Qwen size unchanged
     add_cb(pcb::w, ck, 1, output_df(1));
     add_cb(pcb::qdecay, ck, 1, output_df(2));
     add_cb(pcb::intra, cc, 1, output_df(3));
@@ -463,34 +468,54 @@ tt::tt_metal::ProgramDescriptor ChunkGdnScanProgramFactory::create_descriptor(
                 {CBFormatDescriptor{.buffer_index = static_cast<uint8_t>(idx), .data_format = fmt, .page_size = ts}}}});
     };
 
-    // The dual-summary specialization reads only state-update tensors and repurposes
-    // the unused output-side CBs as a second state ping-pong. Normal scan allocation is unchanged.
+    // Preserve scalar GDN's origin/main CB order and sizes. KDA's dual-summary specialization
+    // repurposes unused output-side CBs as a second state ping-pong.
     const auto input_df = [](const Tensor& tensor) {
         return tt::tt_metal::datatype_to_dataformat_converter(tensor.dtype());
     };
-    add_cb(pcb::u, cv, 1, input_df(in.v_beta));
-    add_cb(pcb::w, ck, 1, input_df(in.kd));
-    add_cb(pcb::kdec_t, kc, 1, input_df(in.k_dec_t));
-    add_cb(pcb::dl, attrs.vector_gate ? Kt : 1, 1, input_df(in.dl));
-    add_cb(pcb::Tinv, cc, 1, input_df(in.t_inv));
-    add_cb(pcb::S, kv);
-    add_cb(pcb::s2, kv);
-    add_cb(pcb::s3, kv);
-    add_cb(pcb::final_s, kv);
-    add_cb(pcb::vnew, cv);
-    add_cb(pcb::supd, kv);
-    add_cb(pcb::stmp, kv);
-    add_cb(pcb::scr1, scr);
-    if (attrs.summary_pair) {
-        add_cb(pcb::qdecay, kv);         // identity-seeded second initial state
-        add_cb(pcb::intra, kv);          // second-state ping
-        add_cb(pcb::ointer, kv);         // second-state pong
-        add_cb(pcb::out, kv, 1, df_io);  // second final state before subtraction
-    } else {
-        add_cb(pcb::qdecay, ck, 1, input_df(in.q_decay));
-        add_cb(pcb::intra, cc, 1, input_df(in.intra));
-        add_cb(pcb::ointer, cv);
+    if (!attrs.vector_gate) {
+        add_cb(pcb::u, cv);
+        add_cb(pcb::w, ck);
+        add_cb(pcb::qdecay, ck);
+        add_cb(pcb::intra, cc);
+        add_cb(pcb::kdec_t, kc);
+        add_cb(pcb::dl, 1);
+        add_cb(pcb::Tinv, cc);
+        add_cb(pcb::S, kv);
+        add_cb(pcb::s2, kv);
+        add_cb(pcb::s3, kv);
         add_cb(pcb::out, cv, 2, df_io);
+        add_cb(pcb::final_s, kv);
+        add_cb(pcb::vnew, cv);
+        add_cb(pcb::ointer, cv);
+        add_cb(pcb::supd, kv);
+        add_cb(pcb::stmp, kv);
+        add_cb(pcb::scr1, scr);
+    } else {
+        add_cb(pcb::u, cv, 1, input_df(in.v_beta));
+        add_cb(pcb::w, ck, 1, input_df(in.kd));
+        add_cb(pcb::kdec_t, kc, 1, input_df(in.k_dec_t));
+        add_cb(pcb::dl, Kt, 1, input_df(in.dl));
+        add_cb(pcb::Tinv, cc, 1, input_df(in.t_inv));
+        add_cb(pcb::S, kv);
+        add_cb(pcb::s2, kv);
+        add_cb(pcb::s3, kv);
+        add_cb(pcb::final_s, kv);
+        add_cb(pcb::vnew, cv);
+        add_cb(pcb::supd, kv);
+        add_cb(pcb::stmp, kv);
+        add_cb(pcb::scr1, scr);
+        if (attrs.summary_pair) {
+            add_cb(pcb::qdecay, kv);
+            add_cb(pcb::intra, kv);
+            add_cb(pcb::ointer, kv);
+            add_cb(pcb::out, kv, 1, df_io);
+        } else {
+            add_cb(pcb::qdecay, ck, 1, input_df(in.q_decay));
+            add_cb(pcb::intra, cc, 1, input_df(in.intra));
+            add_cb(pcb::ointer, cv);
+            add_cb(pcb::out, cv, 2, df_io);
+        }
     }
 
     const std::string kdir = "ttnn/cpp/ttnn/operations/transformer/chunk_gated_delta_rule/device/kernels/";
