@@ -18,7 +18,6 @@ Run every device test through `scripts/run_safe_pytest.sh`. A passing hardware r
 
 | Test | Intent | Required? |
 |---|---|---|
-| `reference/test_affine.py` | CPU proof of affine composition, prefix equivalence, and FP32 stability | Yes while affine-prefix recurrence remains |
 | `reference/test_config.py` | Model-config mapping and validation contracts | Yes |
 | `reference/test_reference.py` | Independent Torch operation and layer identities | Yes |
 | `checkpoint/test_checkpoint.py` | Indexed-shard loading, failure contracts, and padded K3 normalization | Yes; evolve with checkpoint API |
