@@ -468,7 +468,8 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
     const std::optional<ttnn::Tensor>& affine_zero,
     uint32_t p2p_num_links,
     DataType affine_summary_dtype,
-    const std::optional<ttnn::DeviceComputeKernelConfig>& affine_prefix_compute_kernel_config) {
+    const std::optional<ttnn::DeviceComputeKernelConfig>& affine_prefix_compute_kernel_config,
+    DataType grouped_scan_output_dtype) {
     const auto& qs = q_in.logical_shape();
     const auto& vs = v_in.logical_shape();
     const auto& gs = g_in.logical_shape();
@@ -495,6 +496,9 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
     TT_FATAL(
         affine_summary_dtype == DataType::FLOAT32 || affine_summary_dtype == DataType::BFLOAT16,
         "affine_summary_dtype must be FLOAT32 or BFLOAT16");
+    TT_FATAL(
+        grouped_scan_output_dtype == DataType::FLOAT32 || grouped_scan_output_dtype == DataType::BFLOAT16,
+        "grouped_scan_output_dtype must be FLOAT32 or BFLOAT16");
     TT_FATAL(chunk_size == 32, "chunk_kda currently requires chunk_size=32, got {}", chunk_size);
     TT_FATAL(
         k_in.logical_shape() == qs && qs[0] == B && qs[1] == T &&
@@ -714,7 +718,11 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
                 true,
                 out_mem,
                 kernel_cfg,
-                true);
+                true,
+                false,
+                std::nullopt,
+                false,
+                grouped_scan_output_dtype == DataType::BFLOAT16);
         } else {
             auto group_initial_states = ttnn::prim::kda_affine_prefix(
                 summary_a, summary_b, *s0, groups_per_head, prefix_mem, affine_prefix_kernel_cfg);
@@ -731,7 +739,11 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
                 true,
                 out_mem,
                 kernel_cfg,
-                true);
+                true,
+                false,
+                std::nullopt,
+                false,
+                grouped_scan_output_dtype == DataType::BFLOAT16);
         }
         (*grouped_scan)[0] = ttnn::reshape((*grouped_scan)[0], ttnn::Shape({BH, NC, C, V}));
         auto all_final_states = ttnn::reshape((*grouped_scan)[1], ttnn::Shape({BH, groups_per_head, K, V}));

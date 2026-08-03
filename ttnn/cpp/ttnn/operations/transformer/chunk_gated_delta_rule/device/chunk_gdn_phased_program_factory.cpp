@@ -437,9 +437,8 @@ tt::tt_metal::ProgramDescriptor ChunkGdnScanProgramFactory::create_descriptor(
     const uint32_t Vt_full = attrs.val_dim / TILE_WIDTH;
     const uint32_t initial_state_mode = attrs.identity_initial_state ? 2u : (attrs.has_initial_state ? 0u : 1u);
 
-    // o output is fp32 (matches the scan op's compute_output_specs; a bf16 o degraded full-model
-    // quality and was removed). cb_out format must match, else the writer strides wrong.
-    const tt::DataFormat df_io = tt::DataFormat::Float32;
+    // cb_out must match the configured token-output dtype so the writer uses the correct page size.
+    const tt::DataFormat df_io = attrs.output_bf16 ? tt::DataFormat::Float16_b : tt::DataFormat::Float32;
 
     auto* device = in.v_beta.device();
     // Value-parallel fan-out: each core runs one (head, v-block) sequential scan.
@@ -598,16 +597,16 @@ tt::tt_metal::ProgramDescriptor KdaAffinePrefixProgramFactory::create_descriptor
     const auto summary_format = tt::tt_metal::datatype_to_dataformat_converter(in.transform_a.dtype());
     add_cb(0, kk, summary_format);  // BF16 input A
     add_cb(1, kv, summary_format);  // BF16 input B
-    add_cb(2, kk);   // prefix A ping
-    add_cb(3, kv);   // prefix B ping
-    add_cb(4, kk);   // prefix A pong
-    add_cb(5, kv);   // prefix B pong
-    add_cb(6, kk);   // receiver-owned inbound A
-    add_cb(7, kv);   // receiver-owned inbound B
-    add_cb(8, kv);   // initial state
-    add_cb(9, kv);   // group entry state
-    add_cb(10, kv);  // matmul scratch
-    add_cb(11, 1);   // dataflow-to-compute stage token
+    add_cb(2, kk);                  // prefix A ping
+    add_cb(3, kv);                  // prefix B ping
+    add_cb(4, kk);                  // prefix A pong
+    add_cb(5, kv);                  // prefix B pong
+    add_cb(6, kk);                  // receiver-owned inbound A
+    add_cb(7, kv);                  // receiver-owned inbound B
+    add_cb(8, kv);                  // initial state
+    add_cb(9, kv);                  // group entry state
+    add_cb(10, kv);                 // matmul scratch
+    add_cb(11, 1);                  // dataflow-to-compute stage token
 
     constexpr uint32_t ready_semaphore_id = 0;
     constexpr uint32_t arrival_semaphore_id = 1;
@@ -700,7 +699,7 @@ tt::tt_metal::ProgramDescriptor KdaGatedRmsProgramFactory::create_descriptor(
             .format_descriptors = {{CBFormatDescriptor{
                 .buffer_index = static_cast<uint8_t>(idx), .data_format = format, .page_size = tile_size}}}});
     };
-    add_cb(0, Vt, tt::DataFormat::Float32);
+    add_cb(0, Vt, datatype_to_dataformat_converter(in.input.dtype()));
     add_cb(1, Vt, tt::DataFormat::Float16_b);
     add_cb(2, Vt, tt::DataFormat::Float16_b);
     add_cb(3, Vt, tt::DataFormat::Float32);

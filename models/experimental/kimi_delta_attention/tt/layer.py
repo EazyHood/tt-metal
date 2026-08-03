@@ -114,6 +114,7 @@ class KimiDeltaAttention:
         self.recurrent_state_dtype = program_config.recurrent_state_dtype
         self.p2p_num_links = program_config.p2p_num_links
         self.affine_summary_dtype = program_config.affine_summary_dtype
+        self.grouped_scan_output_dtype = program_config.grouped_scan_output_dtype
         if weights is not None and state_dict:
             raise ValueError("pass either constructed KDAWeights or host state_dict, not both")
         if weights is None:
@@ -458,6 +459,9 @@ class KimiDeltaAttention:
             # Real-K3 component A/B: affine-prefix HiFi2 retained PCC 1.0 for every LoudBox layout;
             # median latency changed -0.228%/+0.299%/-0.276% for SP1xTP8/SP2xTP4/SP4xTP2.
             affine_prefix_compute_kernel_config=self.affine_prefix_compute_config,
+            # Real-K3 component A/B: BF16 grouped-scan output retained PCC >=0.999984 for every
+            # LoudBox layout and improved median component latency by 0.199%-0.347%.
+            grouped_scan_output_dtype=self.grouped_scan_output_dtype,
         )
         assert new_recurrent_state is not None
         if len(q.shape) == 4:

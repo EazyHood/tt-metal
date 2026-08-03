@@ -132,6 +132,7 @@ struct ChunkGdnScanParams {
     bool identity_initial_state = false;
     bool output_final_state;
     bool state_only = false;
+    bool output_bf16 = false;
     bool summary_pair = false;
     bool vector_gate = false;
     tt::tt_metal::MemoryConfig output_mem_config;
@@ -168,7 +169,7 @@ struct ChunkGdnScanOperation {
     static tensor_return_value_t create_output_tensors(const operation_attributes_t&, const tensor_args_t&);
 };
 
-// Returns {o [BH,NC,C,V] bf16, final_state [BH,K,V] fp32}.
+// Returns {o [BH,NC,C,V] configured dtype, final_state [BH,K,V] fp32}.
 std::vector<Tensor> chunk_gdn_scan(
     const Tensor& v_beta,
     const Tensor& kd,
@@ -185,7 +186,8 @@ std::vector<Tensor> chunk_gdn_scan(
     bool vector_gate = false,
     bool state_only = false,
     const std::optional<Tensor>& identity_tile = std::nullopt,
-    bool summary_pair = false);
+    bool summary_pair = false,
+    bool output_bf16 = false);
 
 // ---------------------------------------------------------------------------
 // KDA GROUPED AFFINE PREFIX

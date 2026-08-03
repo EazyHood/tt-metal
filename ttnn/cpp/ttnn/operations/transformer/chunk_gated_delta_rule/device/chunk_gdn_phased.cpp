@@ -214,10 +214,9 @@ void ChunkGdnScanOperation::validate_on_program_cache_miss(
 
 ChunkGdnScanOperation::spec_return_value_t ChunkGdnScanOperation::compute_output_specs(
     const operation_attributes_t& attrs, const tensor_args_t&) {
-    // o is fp32; the recurrent final state is fp32 too. (A bf16 o output — feeding a bf16 attention
-    // result into every GDN layer — measurably degraded full-model quality, so it was removed; the
-    // seq path also keeps o fp32.)
-    const auto o_layout = TensorLayout(DataType::FLOAT32, PageConfig(Layout::TILE), attrs.output_mem_config);
+    // Token output dtype is configurable; recurrent state and internal state accumulation stay FP32.
+    const auto output_dtype = attrs.output_bf16 ? DataType::BFLOAT16 : DataType::FLOAT32;
+    const auto o_layout = TensorLayout(output_dtype, PageConfig(Layout::TILE), attrs.output_mem_config);
     const auto s_layout = TensorLayout(DataType::FLOAT32, PageConfig(Layout::TILE), attrs.output_mem_config);
     ttnn::Shape o_shape =
         attrs.summary_pair
@@ -258,7 +257,8 @@ std::vector<Tensor> chunk_gdn_scan(
     bool vector_gate,
     bool state_only,
     const std::optional<Tensor>& identity_tile,
-    bool summary_pair) {
+    bool summary_pair,
+    bool output_bf16) {
     const auto& vb_shape = v_beta.logical_shape();  // [BH, NC, C, V]
     const auto& kd_shape = kd.logical_shape();      // [BH, NC, C, K]
     auto attrs = ChunkGdnScanOperation::operation_attributes_t{
@@ -271,6 +271,7 @@ std::vector<Tensor> chunk_gdn_scan(
         .identity_initial_state = identity_tile.has_value(),
         .output_final_state = output_final_state,
         .state_only = state_only,
+        .output_bf16 = output_bf16,
         .summary_pair = summary_pair,
         .vector_gate = vector_gate,
         .output_mem_config = output_mem_config,
@@ -411,7 +412,7 @@ KdaGatedRmsOperation::program_factory_t KdaGatedRmsOperation::select_program_fac
 
 void KdaGatedRmsOperation::validate_on_program_cache_miss(
     const operation_attributes_t& attrs, const tensor_args_t& in) {
-    check(in.input, "input", DataType::FLOAT32);
+    check_intermediate(in.input, "input", true);
     check(in.gate, "gate", DataType::BFLOAT16);
     check(in.weight, "weight", DataType::BFLOAT16);
     const auto& xs = in.input.logical_shape();

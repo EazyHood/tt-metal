@@ -90,6 +90,7 @@ class KDAProgramConfig:
     p2p_num_links: int = 1
     affine_summary_dtype: ttnn.DataType = ttnn.float32
     affine_prefix_math_fidelity: ttnn.MathFidelity = ttnn.MathFidelity.HiFi4
+    grouped_scan_output_dtype: ttnn.DataType = ttnn.float32
 
     def __post_init__(self) -> None:
         if self.p2p_num_links <= 0:
@@ -107,4 +108,9 @@ class KDAProgramConfig:
         if self.affine_summary_dtype not in (ttnn.float32, ttnn.bfloat16):
             raise ValueError(
                 "affine_summary_dtype must be ttnn.float32 or ttnn.bfloat16, " f"got {self.affine_summary_dtype}"
+            )
+        if self.grouped_scan_output_dtype not in (ttnn.float32, ttnn.bfloat16):
+            raise ValueError(
+                "grouped_scan_output_dtype must be ttnn.float32 or ttnn.bfloat16, "
+                f"got {self.grouped_scan_output_dtype}"
             )

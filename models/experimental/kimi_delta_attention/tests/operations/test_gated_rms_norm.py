@@ -17,7 +17,8 @@ pytestmark = [
 ]
 
 
-def test_kda_gated_rms_norm_matches_reference_cache_and_trace(device: ttnn.Device) -> None:
+@pytest.mark.parametrize("input_dtype", [ttnn.float32, ttnn.bfloat16])
+def test_kda_gated_rms_norm_matches_reference_cache_and_trace(device: ttnn.Device, input_dtype: ttnn.DataType) -> None:
     """Cover Kimi-K3 TP8-local geometry, program reuse, and trace replay."""
     batch = 1
     sequence = 64
@@ -33,6 +34,8 @@ def test_kda_gated_rms_norm_matches_reference_cache_and_trace(device: ttnn.Devic
         generator=generator,
         dtype=torch.float32,
     )
+    if input_dtype == ttnn.bfloat16:
+        inputs = inputs.to(torch.bfloat16)
     gate = torch.randn(
         batch,
         sequence,
@@ -50,7 +53,7 @@ def test_kda_gated_rms_norm_matches_reference_cache_and_trace(device: ttnn.Devic
 
     input_tt = ttnn.from_torch(
         inputs,
-        dtype=ttnn.float32,
+        dtype=input_dtype,
         layout=ttnn.TILE_LAYOUT,
         device=device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,

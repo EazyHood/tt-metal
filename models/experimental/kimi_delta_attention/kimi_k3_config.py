@@ -63,4 +63,5 @@ def kimi_k3_program_config() -> KDAProgramConfig:
         p2p_num_links=2,
         affine_summary_dtype=ttnn.bfloat16,
         affine_prefix_math_fidelity=ttnn.MathFidelity.HiFi2,
+        grouped_scan_output_dtype=ttnn.bfloat16,
     )
