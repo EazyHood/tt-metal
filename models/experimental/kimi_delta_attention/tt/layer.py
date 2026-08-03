@@ -166,6 +166,12 @@ class KimiDeltaAttention:
             fp32_dest_acc_en=True,
             packer_l1_acc=True,
         )
+        self.grouped_scan_compute_config = ttnn.init_device_compute_kernel_config(
+            mesh_device.arch(),
+            math_fidelity=program_config.grouped_scan_math_fidelity,
+            fp32_dest_acc_en=True,
+            packer_l1_acc=True,
+        )
 
     @property
     def _convolution_width(self) -> int:
@@ -462,6 +468,9 @@ class KimiDeltaAttention:
             # Real-K3 component A/B: BF16 grouped-scan output retained PCC >=0.999984 for every
             # LoudBox layout and improved median component latency by 0.199%-0.347%.
             grouped_scan_output_dtype=self.grouped_scan_output_dtype,
+            # Real-K3 component A/B: grouped final-scan HiFi2 retained PCC >=0.995789 for every
+            # LoudBox layout; median latency changed -0.365%/-0.473%/+0.094% for SP1xTP8/SP2xTP4/SP4xTP2.
+            grouped_scan_compute_kernel_config=self.grouped_scan_compute_config,
         )
         assert new_recurrent_state is not None
         if len(q.shape) == 4:

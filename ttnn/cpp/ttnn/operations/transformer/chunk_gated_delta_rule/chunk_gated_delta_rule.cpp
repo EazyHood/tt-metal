@@ -469,7 +469,8 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
     uint32_t p2p_num_links,
     DataType affine_summary_dtype,
     const std::optional<ttnn::DeviceComputeKernelConfig>& affine_prefix_compute_kernel_config,
-    DataType grouped_scan_output_dtype) {
+    DataType grouped_scan_output_dtype,
+    const std::optional<ttnn::DeviceComputeKernelConfig>& grouped_scan_compute_kernel_config) {
     const auto& qs = q_in.logical_shape();
     const auto& vs = v_in.logical_shape();
     const auto& gs = g_in.logical_shape();
@@ -587,6 +588,13 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
     const auto affine_prefix_kernel_cfg = init_device_compute_kernel_config(
         dev->arch(),
         affine_prefix_compute_kernel_config,
+        MathFidelity::HiFi4,
+        /*default_approx_mode=*/false,
+        /*default_fp32_acc=*/true,
+        /*default_l1_acc=*/false);
+    const auto grouped_scan_kernel_cfg = init_device_compute_kernel_config(
+        dev->arch(),
+        grouped_scan_compute_kernel_config,
         MathFidelity::HiFi4,
         /*default_approx_mode=*/false,
         /*default_fp32_acc=*/true,
@@ -717,7 +725,7 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
                 C,
                 true,
                 out_mem,
-                kernel_cfg,
+                grouped_scan_kernel_cfg,
                 true,
                 false,
                 std::nullopt,
@@ -738,7 +746,7 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
                 C,
                 true,
                 out_mem,
-                kernel_cfg,
+                grouped_scan_kernel_cfg,
                 true,
                 false,
                 std::nullopt,

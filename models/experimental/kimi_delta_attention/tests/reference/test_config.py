@@ -64,6 +64,11 @@ def test_program_config_grouped_scan_output_dtype() -> None:
     assert kimi_k3_program_config().grouped_scan_output_dtype == ttnn.bfloat16
 
 
+def test_program_config_grouped_scan_math_fidelity() -> None:
+    assert KDAProgramConfig().grouped_scan_math_fidelity == ttnn.MathFidelity.HiFi4
+    assert kimi_k3_program_config().grouped_scan_math_fidelity == ttnn.MathFidelity.HiFi2
+
+
 def test_program_config_rejects_nonpositive_p2p_links(expect_error) -> None:
     with expect_error(ValueError, "p2p_num_links"):
         KDAProgramConfig(p2p_num_links=0)

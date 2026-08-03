@@ -85,7 +85,8 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
     uint32_t p2p_num_links = 1,
     ttnn::DataType affine_summary_dtype = ttnn::DataType::FLOAT32,
     const std::optional<ttnn::DeviceComputeKernelConfig>& affine_prefix_compute_kernel_config = std::nullopt,
-    ttnn::DataType grouped_scan_output_dtype = ttnn::DataType::FLOAT32);
+    ttnn::DataType grouped_scan_output_dtype = ttnn::DataType::FLOAT32,
+    const std::optional<ttnn::DeviceComputeKernelConfig>& grouped_scan_compute_kernel_config = std::nullopt);
 
 /**
  * Logarithmic affine prefix over sequence partitions of one 2D mesh tensor.

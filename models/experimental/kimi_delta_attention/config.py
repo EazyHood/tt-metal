@@ -91,6 +91,7 @@ class KDAProgramConfig:
     affine_summary_dtype: ttnn.DataType = ttnn.float32
     affine_prefix_math_fidelity: ttnn.MathFidelity = ttnn.MathFidelity.HiFi4
     grouped_scan_output_dtype: ttnn.DataType = ttnn.float32
+    grouped_scan_math_fidelity: ttnn.MathFidelity = ttnn.MathFidelity.HiFi4
 
     def __post_init__(self) -> None:
         if self.p2p_num_links <= 0:

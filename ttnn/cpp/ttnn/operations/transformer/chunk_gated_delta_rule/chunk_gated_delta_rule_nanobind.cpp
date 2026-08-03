@@ -108,7 +108,8 @@ void bind_chunk_gated_delta_rule(nb::module_& mod) {
         nb::arg("p2p_num_links") = 1,
         nb::arg("affine_summary_dtype") = ttnn::DataType::FLOAT32,
         nb::arg("affine_prefix_compute_kernel_config") = nb::none(),
-        nb::arg("grouped_scan_output_dtype") = ttnn::DataType::FLOAT32);
+        nb::arg("grouped_scan_output_dtype") = ttnn::DataType::FLOAT32,
+        nb::arg("grouped_scan_compute_kernel_config") = nb::none());
 
     ttnn::bind_function<"_kda_distributed_affine_prefix", "ttnn.transformer.">(
         mod,
