@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from models.experimental.kimi_delta_attention.config import KDAConfig
+from models.experimental.kimi_delta_attention.weight_schema import validate_kda_weights
 
 
 @dataclass
@@ -23,47 +24,9 @@ class KDAReferenceState:
     v_convolution: torch.Tensor
 
 
-def _require_weight(
-    weights: Mapping[str, torch.Tensor],
-    name: str,
-    shape: tuple[int, ...],
-) -> torch.Tensor:
-    try:
-        weight = weights[name]
-    except KeyError as error:
-        raise ValueError(f"missing KDA weight: {name}") from error
-    if tuple(weight.shape) != shape:
-        raise ValueError(f"{name} shape {tuple(weight.shape)} != {shape}")
-    return weight.float()
-
-
 def validate_reference_weights(weights: Mapping[str, torch.Tensor], config: KDAConfig) -> None:
-    """Validate every canonical weight before reference execution."""
-    hidden = config.hidden_size
-    q_dim, k_dim, v_dim = config.q_dim, config.k_dim, config.v_dim
-    kernel = config.conv_kernel_size
-    key_rank = config.head_k_dim
-    value_rank = config.head_v_dim
-    heads = config.num_heads
-
-    _require_weight(weights, "q_proj.weight", (q_dim, hidden))
-    _require_weight(weights, "k_proj.weight", (k_dim, hidden))
-    _require_weight(weights, "v_proj.weight", (v_dim, hidden))
-    _require_weight(weights, "q_conv1d.weight", (q_dim, 1, kernel))
-    _require_weight(weights, "k_conv1d.weight", (k_dim, 1, kernel))
-    _require_weight(weights, "v_conv1d.weight", (v_dim, 1, kernel))
-    _require_weight(weights, "A_log", (1, 1, heads, 1))
-    _require_weight(weights, "f_a_proj.weight", (key_rank, hidden))
-    _require_weight(weights, "f_b_proj.weight", (heads * key_rank, key_rank))
-    _require_weight(weights, "dt_bias", (heads * key_rank,))
-    _require_weight(weights, "b_proj.weight", (heads, hidden))
-    if config.use_full_rank_gate:
-        _require_weight(weights, "g_proj.weight", (heads * value_rank, hidden))
-    else:
-        _require_weight(weights, "g_a_proj.weight", (value_rank, hidden))
-        _require_weight(weights, "g_b_proj.weight", (heads * value_rank, value_rank))
-    _require_weight(weights, "o_norm.weight", (value_rank,))
-    _require_weight(weights, "o_proj.weight", (hidden, heads * value_rank))
+    """Backward-compatible reference alias for the canonical host schema."""
+    validate_kda_weights(weights, config)
 
 
 def causal_depthwise_conv_reference(

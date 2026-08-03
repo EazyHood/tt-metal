@@ -87,12 +87,14 @@ class KimiDeltaAttention:
         self,
         mesh_device: ttnn.Device | ttnn.MeshDevice,
         config: KDAConfig,
-        state_dict: Mapping[str, torch.Tensor],
+        state_dict: Mapping[str, torch.Tensor] | None = None,
         tensor_cache_path: Path | None = None,
         tt_ccl: TT_CCL | None = None,
         tensor_parallel_axis: int = 1,
         program_config: KDAProgramConfig | None = None,
         summary_group_chunks: int | None = None,
+        cache_name_prefix: str = "kda",
+        weights: KDAWeights | None = None,
     ) -> None:
         if tensor_parallel_axis not in (0, 1):
             raise ValueError(f"tensor_parallel_axis must be 0 or 1, got {tensor_parallel_axis}")
@@ -111,13 +113,29 @@ class KimiDeltaAttention:
         self.output_projection_out_block_w = program_config.output_projection_out_block_w
         self.recurrent_state_dtype = program_config.recurrent_state_dtype
         self.p2p_num_links = program_config.p2p_num_links
-        self.weights: KDAWeights = load_kda_weights(
-            mesh_device,
-            config,
-            state_dict,
-            tensor_cache_path,
-            tensor_parallel_axis=tensor_parallel_axis,
+        if weights is not None and state_dict:
+            raise ValueError("pass either constructed KDAWeights or host state_dict, not both")
+        if weights is None:
+            loaded = load_kda_weights(
+                mesh_device,
+                config,
+                state_dict,
+                tensor_cache_path,
+                cache_name_prefix=cache_name_prefix,
+                tensor_parallel_axis=tensor_parallel_axis,
+            )
+            assert loaded is not None
+            weights = loaded
+        expected_tp_size = (
+            tuple(mesh_device.shape)[tensor_parallel_axis] if isinstance(mesh_device, ttnn.MeshDevice) else 1
         )
+        if weights.tensor_parallel_size != expected_tp_size or weights.tensor_parallel_axis != tensor_parallel_axis:
+            raise ValueError(
+                "KDAWeights placement does not match the layer mesh: "
+                f"weights TP={weights.tensor_parallel_size} axis={weights.tensor_parallel_axis}, "
+                f"layer TP={expected_tp_size} axis={tensor_parallel_axis}"
+            )
+        self.weights = weights
         self.tensor_parallel_size = self.weights.tensor_parallel_size
         self.global_config = config
         if self.sequence_parallel_size > 1 and config.head_k_dim != config.head_v_dim:

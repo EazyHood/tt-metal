@@ -3,5 +3,6 @@
 """Private TTNN implementation for Kimi Delta Attention."""
 
 from models.experimental.kimi_delta_attention.tt.layer import KimiDeltaAttention
+from models.experimental.kimi_delta_attention.tt.weights import KDAWeights
 
-__all__ = ["KimiDeltaAttention"]
+__all__ = ["KDAWeights", "KimiDeltaAttention"]

@@ -12,10 +12,10 @@ from models.experimental.kimi_delta_attention.checkpoint import (
     kda_layer_prefix,
     load_kda_layer_state_dict,
     required_kda_weight_names,
-    normalize_kda_state_dict,
     resolve_kda_layer_shards,
 )
 from models.experimental.kimi_delta_attention.config import KDAConfig
+from models.experimental.kimi_delta_attention.weight_schema import normalize_kda_state_dict
 from models.experimental.kimi_delta_attention.tests.utils import random_weights
 
 

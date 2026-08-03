@@ -20,6 +20,7 @@ from models.experimental.kimi_delta_attention.kimi_k3_config import (
     kimi_k3_program_config,
 )
 from models.experimental.kimi_delta_attention.tt.layer import KimiDeltaAttention
+from models.experimental.kimi_delta_attention.tt.weights import KDAWeights
 from models.tt_transformers.tt.ccl import TT_CCL
 from tests.ttnn.profiling.realtime_profiler_utils import profile_realtime_program
 
@@ -53,6 +54,7 @@ def make_kimi_k3_device_case(
     case: KimiK3TestCase,
     *,
     tensor_parallel_axis: int = 1,
+    weights: KDAWeights | None = None,
 ) -> tuple[KimiDeltaAttention, ttnn.Tensor]:
     """Construct the real-weight layer and sequence-parallel device input."""
     sequence_parallel_axis = 1 - tensor_parallel_axis
@@ -73,8 +75,10 @@ def make_kimi_k3_device_case(
     layer = KimiDeltaAttention(
         mesh_device,
         case.config,
-        case.state_dict,
-        tensor_cache_path=case.checkpoint_dir / "ttnn_cache" / "layer_1",
+        case.state_dict if weights is None else None,
+        tensor_cache_path=case.checkpoint_dir / "ttnn_cache",
+        cache_name_prefix=f"layer_{KimiK3Config.FIRST_KDA_LAYER}.kda",
+        weights=weights,
         tt_ccl=TT_CCL(mesh_device),
         tensor_parallel_axis=tensor_parallel_axis,
         program_config=kimi_k3_program_config(),

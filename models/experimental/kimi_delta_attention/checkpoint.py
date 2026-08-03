@@ -5,38 +5,17 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from pathlib import Path
 
 import torch
 from safetensors import safe_open
 
 from models.experimental.kimi_delta_attention.config import KDAConfig
-from models.experimental.kimi_delta_attention.reference import validate_reference_weights
-
-KDA_COMMON_WEIGHT_NAMES = (
-    "q_proj.weight",
-    "k_proj.weight",
-    "v_proj.weight",
-    "q_conv1d.weight",
-    "k_conv1d.weight",
-    "v_conv1d.weight",
-    "A_log",
-    "f_a_proj.weight",
-    "f_b_proj.weight",
-    "dt_bias",
-    "b_proj.weight",
-    "o_norm.weight",
-    "o_proj.weight",
+from models.experimental.kimi_delta_attention.weight_schema import (
+    normalize_kda_a_log,
+    required_kda_weight_names,
+    validate_kda_weights,
 )
-KDA_LOW_RANK_GATE_WEIGHT_NAMES = ("g_a_proj.weight", "g_b_proj.weight")
-KDA_FULL_RANK_GATE_WEIGHT_NAMES = ("g_proj.weight",)
-
-
-def required_kda_weight_names(config: KDAConfig) -> tuple[str, ...]:
-    """Return the canonical layer-local checkpoint keys for ``config``."""
-    gate_names = KDA_FULL_RANK_GATE_WEIGHT_NAMES if config.use_full_rank_gate else KDA_LOW_RANK_GATE_WEIGHT_NAMES
-    return KDA_COMMON_WEIGHT_NAMES + gate_names
 
 
 def kda_layer_prefix(layer_idx: int) -> str:
@@ -68,15 +47,6 @@ def resolve_kda_layer_shards(checkpoint_dir: Path, layer_idx: int, config: KDACo
     return shards
 
 
-def _normalize_a_log(a_log: torch.Tensor, config: KDAConfig) -> torch.Tensor:
-    """Normalize checkpoint head padding into canonical ``[1,1,H,1]`` form."""
-    if a_log.numel() == config.num_heads:
-        return a_log.reshape(1, 1, config.num_heads, 1)
-    if config.num_heads == 96 and a_log.numel() == 128:
-        return a_log.reshape(-1)[: config.num_heads].reshape(1, 1, config.num_heads, 1)
-    raise ValueError(f"A_log has {a_log.numel()} entries; expected {config.num_heads} logical heads")
-
-
 def load_kda_layer_state_dict(checkpoint_dir: Path, layer_idx: int, config: KDAConfig) -> dict[str, torch.Tensor]:
     """Load and canonicalize one KDA layer from complete indexed safetensor shards."""
     checkpoint_dir = Path(checkpoint_dir)
@@ -95,14 +65,6 @@ def load_kda_layer_state_dict(checkpoint_dir: Path, layer_idx: int, config: KDAC
     missing = [name for name in required if name not in state_dict]
     if missing:
         raise ValueError(f"layer {layer_idx} checkpoint shard(s) are missing KDA weights: {missing}")
-    state_dict["A_log"] = _normalize_a_log(state_dict["A_log"], config)
-    validate_reference_weights(state_dict, config)
+    state_dict["A_log"] = normalize_kda_a_log(state_dict["A_log"], config)
+    validate_kda_weights(state_dict, config)
     return state_dict
-
-
-def normalize_kda_state_dict(state_dict: Mapping[str, torch.Tensor], config: KDAConfig) -> dict[str, torch.Tensor]:
-    """Canonicalize a caller-provided layer-local mapping and validate all weights."""
-    normalized = dict(state_dict)
-    normalized["A_log"] = _normalize_a_log(normalized["A_log"], config)
-    validate_reference_weights(normalized, config)
-    return normalized

@@ -26,10 +26,10 @@ Run every device test through `scripts/run_safe_pytest.sh`. A passing hardware r
 | `operations/test_halo.py` | 2D-mesh convolution-halo correctness on both TP axes | Yes while SP convolution remains |
 | `operations/test_distributed_affine.py` | Distributed-prefix equivalence, cache reuse, and trace replay | Yes while SP affine prefix remains |
 | `operations/test_gated_rms_norm.py` | Direct K3-geometry gated-RMS PCC, cache reuse, and trace replay | Yes while KDA uses the fused gated-RMS operation |
-| `model/test_layer.py` | Small synthetic composed-layer PCC, validation, segmented state, and external state | Yes |
+| `model/test_layer.py` | Small synthetic composed-layer PCC, offline cache/cache-only construction, validation, segmented state, and external state | Yes |
 | `model/test_distributed_layer.py` | Synthetic SP layer PCC and segmented-prefill state continuity | Yes |
 | `model/test_weights.py` | TP placement plus TP/2D composed-layer correctness | Yes; direct placement and integration contracts |
-| `model/test_real_weights.py` | Independent Torch-reference PCC with pinned Kimi-K3 layer-1 weights; correctness forward emits realtime records | Yes; primary real-weight accuracy gate |
+| `model/test_real_weights.py` | Offline cache build and cache-only independent Torch-reference PCC with pinned Kimi-K3 layer-1 weights; correctness forward emits realtime records | Yes; primary real-weight accuracy gate |
 | `perf/test_layer_perf.py` | Real-K3 T=5120 profiled-result PCC, profiler overhead, records, and trace latency on the three target layouts | Yes; primary perf acceptance |
 | `perf/perf_targets/bh_loudbox.json` | Versioned LoudBox trace-wall references, workload provenance, and regression limits | Yes; executable perf source of truth |
 | `perf/perf_targets/bh_loudbox_fusion_ab.json` | Versioned MMRS, convolution, and gated-RMS A/B evidence, scope, provenance, and reproduction | Yes; source of truth for fusion decisions |

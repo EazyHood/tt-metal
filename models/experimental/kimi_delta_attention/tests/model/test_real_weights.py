@@ -10,11 +10,13 @@ import torch
 import ttnn
 from models.common.utility_functions import comp_pcc, run_for_blackhole
 from models.experimental.kimi_delta_attention.reference import kda_forward_reference
+from models.experimental.kimi_delta_attention.kimi_k3_config import KimiK3Config
 from models.experimental.kimi_delta_attention.tests.utils import (
     make_kimi_k3_device_case,
     make_kimi_k3_test_case,
     run_profiled_forward,
 )
+from models.experimental.kimi_delta_attention.tt.weights import KDAWeights
 
 pytestmark = [
     run_for_blackhole(),
@@ -37,7 +39,13 @@ def test_kimi_k3_layer_1_real_weights_pcc(
 ) -> None:
     case = make_kimi_k3_test_case(kimi_k3_checkpoint_dir, sequence=32)
     golden_output, golden_state = kda_forward_reference(case.hidden, case.state_dict, case.config)
-    layer, hidden_tt = make_kimi_k3_device_case(mesh_device, case)
+    cache_path = case.checkpoint_dir / "ttnn_cache"
+    cache_prefix = f"layer_{KimiK3Config.FIRST_KDA_LAYER}.kda"
+    if not KDAWeights.check_cache_complete(cache_path, cache_prefix, case.config, mesh_device):
+        KDAWeights.build_ttnn_cache(case.state_dict, cache_path, cache_prefix, mesh_device, case.config)
+    assert KDAWeights.check_cache_complete(cache_path, cache_prefix, case.config, mesh_device)
+    cached_weights = KDAWeights.from_cache(mesh_device, case.config, cache_path, cache_prefix)
+    layer, hidden_tt = make_kimi_k3_device_case(mesh_device, case, weights=cached_weights)
     layer.reset_state(batch_size=1)
     with ttnn.manage_config("throw_exception_on_fallback", True):
         output, records = run_profiled_forward(mesh_device, lambda: layer.forward(hidden_tt))

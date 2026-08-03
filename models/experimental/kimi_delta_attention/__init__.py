@@ -6,9 +6,11 @@ from models.experimental.kimi_delta_attention.checkpoint import load_kda_layer_s
 from models.experimental.kimi_delta_attention.config import KDAConfig
 from models.experimental.kimi_delta_attention.kimi_k3_config import KimiK3Config, kimi_k3_kda_config
 from models.experimental.kimi_delta_attention.tt.layer import KimiDeltaAttention
+from models.experimental.kimi_delta_attention.tt.weights import KDAWeights
 
 __all__ = [
     "KDAConfig",
+    "KDAWeights",
     "KimiDeltaAttention",
     "KimiK3Config",
     "kimi_k3_kda_config",

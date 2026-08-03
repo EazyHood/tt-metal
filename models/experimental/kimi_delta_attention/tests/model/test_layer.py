@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Blackhole PCC tests for the composed TTNN KDA layer."""
 
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -14,6 +16,7 @@ from models.experimental.kimi_delta_attention.tests.utils import (
     random_weights,
 )
 from models.experimental.kimi_delta_attention.tt.layer import KimiDeltaAttention
+from models.experimental.kimi_delta_attention.tt.weights import KDAWeights
 
 pytestmark = [
     run_for_blackhole(),
@@ -76,6 +79,27 @@ def test_composed_layer_pcc(device: ttnn.Device) -> None:
     _assert_pcc(f"T={sequence} output", golden_output, actual_output)
     _assert_pcc(f"T={sequence} recurrent state", golden_state.recurrent, actual_recurrent)
     _assert_pcc(f"T={sequence} convolution state", golden_convolution, actual_convolution)
+
+
+def test_offline_cache_and_cache_only_layer_pcc(device: ttnn.Device, tmp_path: Path, expect_error) -> None:
+    config = make_config()
+    state_dict = random_weights(config)
+    hidden = torch.randn(1, 32, config.hidden_size, generator=torch.Generator().manual_seed(151), dtype=torch.bfloat16)
+    golden_output, _ = kda_forward_reference(hidden, state_dict, config)
+    cache_prefix = "layer_0.kda"
+
+    assert not KDAWeights.check_cache_complete(tmp_path, cache_prefix, config, device)
+    with expect_error(FileNotFoundError, "incomplete KDA TTNN cache"):
+        KDAWeights.from_cache(device, config, tmp_path, cache_prefix)
+
+    KDAWeights.build_ttnn_cache(state_dict, tmp_path, cache_prefix, device, config)
+    assert KDAWeights.check_cache_complete(tmp_path, cache_prefix, config, device)
+    cached_weights = KDAWeights.from_cache(device, config, tmp_path, cache_prefix)
+    layer = KimiDeltaAttention(device, config, weights=cached_weights)
+    layer.reset_state(batch_size=1)
+
+    actual_output = _forward(layer, hidden)
+    _assert_pcc("cache-only output", golden_output, actual_output)
 
 
 def test_non_tile_aligned_sequence_is_rejected(device: ttnn.Device, expect_error) -> None:
