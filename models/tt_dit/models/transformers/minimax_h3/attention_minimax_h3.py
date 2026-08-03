@@ -41,8 +41,14 @@ class MiniMaxH3Attention(Module):
         ccl_manager: CCLManager,
         parallel_config: DiTParallelConfig,
         is_fsdp: bool = False,
+        is_sequence_parallel: bool = True,
     ) -> None:
         super().__init__()
+
+        # is_sequence_parallel=False means the sequence is *replicated* on the SP axis rather than
+        # fractured across it, so attention runs locally with plain SDPA and no ring all-gather. The
+        # token refiner uses that: its text stream is short and every SP device holds all of it.
+        self.is_sequence_parallel = is_sequence_parallel
 
         self.hidden_size = hidden_size
         self.num_heads = num_heads
@@ -207,19 +213,25 @@ class MiniMaxH3Attention(Module):
     def forward(
         self,
         spatial_1BND: ttnn.Tensor,
-        N: int,
-        rope_cos: ttnn.Tensor,
-        rope_sin: ttnn.Tensor,
+        N: int | None = None,
+        rope_cos: ttnn.Tensor | None = None,
+        rope_sin: ttnn.Tensor | None = None,
     ) -> ttnn.Tensor:
         """
-        spatial_1BND: fractured N on SP, fractured hidden_size on TP
-        rope_cos/rope_sin: [1, 1, N_local, rotary_dim], fractured N on SP, replicated on TP
-        N: logical (unfractured) packed sequence length
+        spatial_1BND: fractured hidden_size on TP; fractured N on SP when `is_sequence_parallel`,
+            otherwise replicated on SP.
+        rope_cos/rope_sin: [1, 1, N_local, rotary_dim], fractured N on SP, replicated on TP. Both
+            None skips the rotary embedding entirely, as the token refiner requires.
+        N: logical (unfractured) sequence length. Only needed for ring attention.
 
-        Returns the attention output, fractured N on SP and hidden_size on TP.
+        Returns the attention output with the same distribution as the input.
         """
+        assert (rope_cos is None) == (rope_sin is None), "rope_cos and rope_sin must be given together"
+
         tp_factor = self.parallel_config.tensor_parallel.factor
         sp_factor = self.parallel_config.sequence_parallel.factor
+        use_ring = self.is_sequence_parallel and sp_factor > 1
+        assert not (use_ring and N is None), "ring attention needs the logical sequence length N"
 
         # NOTE: bringup takes the unfused path -- an explicit all-gather feeding a plain
         # column-parallel matmul. Folding these into `all_gather_minimal_matmul_async` (as
@@ -248,10 +260,11 @@ class MiniMaxH3Attention(Module):
         q_BHNE = self.norm_q(q_BHNE)
         k_BHNE = self.norm_k(k_BHNE)
 
-        q_BHNE = self._apply_rope(q_BHNE, rope_cos, rope_sin)
-        k_BHNE = self._apply_rope(k_BHNE, rope_cos, rope_sin)
+        if rope_cos is not None:
+            q_BHNE = self._apply_rope(q_BHNE, rope_cos, rope_sin)
+            k_BHNE = self._apply_rope(k_BHNE, rope_cos, rope_sin)
 
-        if sp_factor > 1:
+        if use_ring:
             # Sequence is fractured across SP, so attention must gather K/V around the ring.
             # The packed sequence is one attention document (the test keeps it padless), so no mask.
             spatial_BHNE, _prompt, _lse = ttnn.transformer.ring_joint_scaled_dot_product_attention(
