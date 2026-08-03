@@ -185,7 +185,9 @@ class MiniMaxH3Transformer3DModel(Module):
         freq_dim: int = 256,
         time_embed_hidden_dim: int = 5376,
         time_embed_dim: int = 2688,
-        rope_theta: float = 10000.0,
+        # NOTE: `rope_freq_dim` and `rope_theta` from the checkpoint config are deliberately absent.
+        # The rotary embedding is computed by the caller and passed in as cos/sin, so accepting them
+        # here would imply this module uses them.
         norm_eps: float = 1e-5,
         qk_norm_eps: float = 1e-5,
         final_norm_eps: float = 1e-5,
