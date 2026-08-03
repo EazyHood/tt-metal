@@ -62,4 +62,5 @@ def kimi_k3_program_config() -> KDAProgramConfig:
         # SP4xTP2 affine-prefix A/B: 1.683 ms with one link vs 0.991 ms with two; generic P2P defaults to one.
         p2p_num_links=2,
         affine_summary_dtype=ttnn.bfloat16,
+        affine_prefix_math_fidelity=ttnn.MathFidelity.HiFi2,
     )

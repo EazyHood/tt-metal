@@ -467,7 +467,8 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
     const std::optional<ttnn::Tensor>& affine_identity,
     const std::optional<ttnn::Tensor>& affine_zero,
     uint32_t p2p_num_links,
-    DataType affine_summary_dtype) {
+    DataType affine_summary_dtype,
+    const std::optional<ttnn::DeviceComputeKernelConfig>& affine_prefix_compute_kernel_config) {
     const auto& qs = q_in.logical_shape();
     const auto& vs = v_in.logical_shape();
     const auto& gs = g_in.logical_shape();
@@ -579,6 +580,13 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
         /*default_approx_mode=*/false,
         /*default_fp32_acc=*/true,
         /*default_l1_acc=*/false);
+    const auto affine_prefix_kernel_cfg = init_device_compute_kernel_config(
+        dev->arch(),
+        affine_prefix_compute_kernel_config,
+        MathFidelity::HiFi4,
+        /*default_approx_mode=*/false,
+        /*default_fp32_acc=*/true,
+        /*default_l1_acc=*/false);
     // Measured Kimi-K3 storage choice: BF16 v_beta, q_decay, and dl; other prep outputs stay FP32.
     constexpr uint32_t prep_bf16_mask = 0x26;
     const auto prep_cb_bytes = ttnn::prim::chunk_gdn_prep_cb_size_bytes(C, K, V, true, g.dtype(), prep_bf16_mask);
@@ -676,8 +684,8 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
         TT_FATAL(s0.has_value(), "group-prefix scan requires initial state");
         const auto prefix_mem = distributed_prefix ? out_mem : ttnn::L1_MEMORY_CONFIG;
         if (distributed_prefix) {
-            auto [partition_a, partition_b] =
-                ttnn::prim::kda_affine_compose(summary_a, summary_b, groups_per_head, prefix_mem, kernel_cfg);
+            auto [partition_a, partition_b] = ttnn::prim::kda_affine_compose(
+                summary_a, summary_b, groups_per_head, prefix_mem, affine_prefix_kernel_cfg);
             auto identity = ttnn::reshape(*affine_identity, ttnn::Shape({BH, K, K}));
             auto zero = ttnn::reshape(*affine_zero, ttnn::Shape({BH, K, V}));
             auto [partition_entry_state, final_state] = kda_distributed_affine_prefix(
@@ -688,11 +696,11 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
                 zero,
                 *sequence_parallel_axis,
                 out_mem,
-                kernel_cfg,
+                affine_prefix_kernel_cfg,
                 p2p_num_links);
             distributed_final_state = final_state;
             auto group_initial_states = ttnn::prim::kda_affine_prefix(
-                summary_a, summary_b, partition_entry_state, groups_per_head, prefix_mem, kernel_cfg);
+                summary_a, summary_b, partition_entry_state, groups_per_head, prefix_mem, affine_prefix_kernel_cfg);
             grouped_scan = ttnn::prim::chunk_gdn_scan(
                 grouped[0],
                 grouped[1],
@@ -708,8 +716,8 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
                 kernel_cfg,
                 true);
         } else {
-            auto group_initial_states =
-                ttnn::prim::kda_affine_prefix(summary_a, summary_b, *s0, groups_per_head, prefix_mem, kernel_cfg);
+            auto group_initial_states = ttnn::prim::kda_affine_prefix(
+                summary_a, summary_b, *s0, groups_per_head, prefix_mem, affine_prefix_kernel_cfg);
             grouped_scan = ttnn::prim::chunk_gdn_scan(
                 grouped[0],
                 grouped[1],

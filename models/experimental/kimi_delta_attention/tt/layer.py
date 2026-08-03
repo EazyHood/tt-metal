@@ -159,6 +159,12 @@ class KimiDeltaAttention:
             fp32_dest_acc_en=True,
             packer_l1_acc=True,
         )
+        self.affine_prefix_compute_config = ttnn.init_device_compute_kernel_config(
+            mesh_device.arch(),
+            math_fidelity=program_config.affine_prefix_math_fidelity,
+            fp32_dest_acc_en=True,
+            packer_l1_acc=True,
+        )
 
     @property
     def _convolution_width(self) -> int:
@@ -449,6 +455,9 @@ class KimiDeltaAttention:
             # Real-K3 component A/B: BF16 affine-summary storage retained PCC 0.999429/0.999545/0.999702
             # for SP1xTP8/SP2xTP4/SP4xTP2, with <=0.687% median and <=0.858% 95% UCB latency cost.
             affine_summary_dtype=self.affine_summary_dtype,
+            # Real-K3 component A/B: affine-prefix HiFi2 retained PCC 1.0 for every LoudBox layout;
+            # median latency changed -0.228%/+0.299%/-0.276% for SP1xTP8/SP2xTP4/SP4xTP2.
+            affine_prefix_compute_kernel_config=self.affine_prefix_compute_config,
         )
         assert new_recurrent_state is not None
         if len(q.shape) == 4:

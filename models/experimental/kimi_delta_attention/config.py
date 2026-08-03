@@ -89,6 +89,7 @@ class KDAProgramConfig:
     recurrent_state_dtype: ttnn.DataType = ttnn.float32
     p2p_num_links: int = 1
     affine_summary_dtype: ttnn.DataType = ttnn.float32
+    affine_prefix_math_fidelity: ttnn.MathFidelity = ttnn.MathFidelity.HiFi4
 
     def __post_init__(self) -> None:
         if self.p2p_num_links <= 0:
