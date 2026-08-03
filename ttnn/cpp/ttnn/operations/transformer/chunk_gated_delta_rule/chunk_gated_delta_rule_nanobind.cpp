@@ -70,6 +70,103 @@ void bind_chunk_gated_delta_rule(nb::module_& mod) {
         nb::arg("tril") = nb::none(),
         nb::arg("ones") = nb::none(),
         nb::arg("masks") = nb::none());
+
+    ttnn::bind_function<"chunk_kda", "ttnn.transformer.">(
+        mod,
+        R"doc(
+        Chunk-parallel Kimi Delta Attention recurrence with per-key vector decay.
+
+        q/k must be L2-normalized. Shapes: q/k/g [B,T,H,K], v [B,T,H,V],
+        with rank-3 flat [B,T,H*D] q/k/v/g accepted for tile-aligned sequences;
+        beta [B,T,H], initial_state [B,H,K,V]. chunk_size is currently 32.
+        summary_group_chunks counts 32-token chunks in each local affine-summary group.
+        Returns token-major output [B,T,H,V], or TILE [B*H,T,V] when output_head_major=True,
+        and an optional final state.
+        )doc",
+        &ttnn::transformer::chunk_kda,
+        nb::arg("q").noconvert(),
+        nb::arg("k").noconvert(),
+        nb::arg("v").noconvert(),
+        nb::arg("g").noconvert(),
+        nb::arg("beta").noconvert(),
+        nb::kw_only(),
+        nb::arg("scale") = nb::none(),
+        nb::arg("initial_state") = nb::none(),
+        nb::arg("output_final_state") = false,
+        nb::arg("output_head_major") = false,
+        nb::arg("chunk_size") = 32,
+        nb::arg("memory_config") = nb::none(),
+        nb::arg("compute_kernel_config") = nb::none(),
+        nb::arg("eye") = nb::none(),
+        nb::arg("tril") = nb::none(),
+        nb::arg("ones") = nb::none(),
+        nb::arg("masks") = nb::none(),
+        nb::arg("rms_gate") = nb::none(),
+        nb::arg("rms_weight") = nb::none(),
+        nb::arg("rms_epsilon") = 1e-5f,
+        nb::arg("summary_group_chunks") = 8,
+        nb::arg("sequence_parallel_axis") = nb::none(),
+        nb::arg("affine_identity") = nb::none(),
+        nb::arg("affine_zero") = nb::none());
+
+    ttnn::bind_function<"kda_distributed_affine_prefix", "ttnn.transformer.">(
+        mod,
+        R"doc(
+        Compose one affine KDA partition summary per SP rank with a logarithmic
+        causal prefix. Returns each rank entry state and the global final state
+        replicated over the SP mesh axis.
+        )doc",
+        &ttnn::transformer::kda_distributed_affine_prefix,
+        nb::arg("transform_a").noconvert(),
+        nb::arg("transform_b").noconvert(),
+        nb::arg("initial_state").noconvert(),
+        nb::arg("identity_a").noconvert(),
+        nb::arg("zero_b").noconvert(),
+        nb::kw_only(),
+        nb::arg("sequence_parallel_axis"),
+        nb::arg("memory_config") = nb::none(),
+        nb::arg("compute_kernel_config") = nb::none());
+
+    ttnn::bind_function<"kda_convolution_halo", "ttnn.transformer.">(
+        mod,
+        "Exchange causal-convolution carry between SP neighbors and replicate the final carry.",
+        &ttnn::transformer::kda_convolution_halo,
+        nb::arg("projected_qkv").noconvert(),
+        nb::arg("initial_carry").noconvert(),
+        nb::kw_only(),
+        nb::arg("sequence_parallel_axis"),
+        nb::arg("memory_config") = nb::none(),
+        nb::arg("compute_kernel_config") = nb::none());
+
+    ttnn::bind_function<"kda_gated_rms_norm", "ttnn.transformer.">(
+        mod,
+        "Fused per-head RMSNorm and sigmoid gate for tile-aligned KDA prefill.",
+        &ttnn::transformer::kda_gated_rms_norm,
+        nb::arg("input").noconvert(),
+        nb::arg("gate").noconvert(),
+        nb::arg("weight").noconvert(),
+        nb::arg("num_heads"),
+        nb::kw_only(),
+        nb::arg("epsilon") = 1e-5f,
+        nb::arg("memory_config") = nb::none(),
+        nb::arg("compute_kernel_config") = nb::none());
+
+    ttnn::bind_function<"kda_causal_conv1d_split", "ttnn.transformer.">(
+        mod,
+        "Four-tap KDA convolution with direct tiled Q/K/V outputs.",
+        &ttnn::transformer::kda_causal_conv1d_split,
+        nb::arg("input").noconvert(),
+        nb::arg("state").noconvert(),
+        nb::arg("tap0").noconvert(),
+        nb::arg("tap1").noconvert(),
+        nb::arg("tap2").noconvert(),
+        nb::arg("tap3").noconvert(),
+        nb::arg("q_width"),
+        nb::arg("k_width"),
+        nb::arg("v_width"),
+        nb::kw_only(),
+        nb::arg("memory_config") = nb::none(),
+        nb::arg("compute_kernel_config") = nb::none());
 }
 
 }  // namespace ttnn::operations::transformer
