@@ -12,7 +12,7 @@
   "provenance": {
     "measured_at_utc": "2026-08-03",
     "validated_source_tree": "b280335bde30f732b076d020c2d3a429038b9ecf",
-    "mmrs_reproduction_commit": "ed838b4e1b5",
+    "mmrs_reproduction_commit": "81a65b68186",
     "timing_method": "warm synchronized trace replay average",
     "pcc_threshold": 0.98
   },
