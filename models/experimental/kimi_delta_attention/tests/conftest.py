@@ -8,6 +8,10 @@ from pathlib import Path
 import pytest
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line("markers", "perf: mark explicit KDA performance tests")
+
+
 @pytest.fixture
 def kimi_k3_checkpoint_dir() -> Path:
     """Return the explicitly selected pinned Kimi-K3 checkpoint subset."""
