@@ -65,4 +65,5 @@ def kimi_k3_program_config() -> KDAProgramConfig:
         affine_prefix_math_fidelity=ttnn.MathFidelity.HiFi2,
         grouped_scan_output_dtype=ttnn.bfloat16,
         grouped_scan_math_fidelity=ttnn.MathFidelity.HiFi2,
+        gated_rms_output_dtype=ttnn.bfloat16,
     )

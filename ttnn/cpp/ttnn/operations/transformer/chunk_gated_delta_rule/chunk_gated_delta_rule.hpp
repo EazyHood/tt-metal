@@ -123,7 +123,8 @@ ttnn::Tensor kda_gated_rms_norm(
     uint32_t num_heads,
     float epsilon = 1e-5f,
     const std::optional<ttnn::MemoryConfig>& memory_config = std::nullopt,
-    const std::optional<ttnn::DeviceComputeKernelConfig>& compute_kernel_config = std::nullopt);
+    const std::optional<ttnn::DeviceComputeKernelConfig>& compute_kernel_config = std::nullopt,
+    ttnn::DataType output_dtype = ttnn::DataType::FLOAT32);
 
 /** Four-tap KDA convolution with direct tiled Q/K/V outputs. */
 std::tuple<ttnn::Tensor, ttnn::Tensor, ttnn::Tensor> kda_causal_conv1d_split(

@@ -248,6 +248,7 @@ struct KdaGatedRmsParams {
     uint32_t value_dim;
     float epsilon;
     tt::tt_metal::MemoryConfig output_mem_config;
+    DataType output_dtype;
     DeviceComputeKernelConfig compute_kernel_config;
 };
 
@@ -282,7 +283,8 @@ Tensor kda_gated_rms_norm(
     uint32_t num_heads,
     float epsilon,
     const tt::tt_metal::MemoryConfig& output_mem_config,
-    const DeviceComputeKernelConfig& compute_kernel_config);
+    const DeviceComputeKernelConfig& compute_kernel_config,
+    DataType output_dtype);
 
 struct KdaCausalConvParams {
     uint32_t sequence;

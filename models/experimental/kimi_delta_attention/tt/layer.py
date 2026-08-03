@@ -115,6 +115,7 @@ class KimiDeltaAttention:
         self.p2p_num_links = program_config.p2p_num_links
         self.affine_summary_dtype = program_config.affine_summary_dtype
         self.grouped_scan_output_dtype = program_config.grouped_scan_output_dtype
+        self.gated_rms_output_dtype = program_config.gated_rms_output_dtype
         if weights is not None and state_dict:
             raise ValueError("pass either constructed KDAWeights or host state_dict, not both")
         if weights is None:
@@ -496,6 +497,9 @@ class KimiDeltaAttention:
             epsilon=config.norm_eps,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             compute_kernel_config=self.compute_config,
+            # Real-K3 component A/B: direct BF16 output retained PCC 1.0 for every LoudBox layout
+            # and improved median component latency by 0.655%-1.339%.
+            output_dtype=self.gated_rms_output_dtype,
         )
 
     def _project_output(
@@ -512,7 +516,8 @@ class KimiDeltaAttention:
             assert self.tt_ccl is not None
             # Real-K3 T=5120 full-layer A/B rejected fused MMRS: -3.84% SP2 and -1.56% SP4.
             # Standalone matmul and RS already overlap; see perf_targets/bh_loudbox_fusion_ab.json.
-            output = ttnn.typecast(output, ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+            if output.dtype != ttnn.bfloat16:
+                output = ttnn.typecast(output, ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
             output = ttnn.reshape(output, (1, batch, sequence, config.v_dim))
             output = ttnn.linear(
                 output,

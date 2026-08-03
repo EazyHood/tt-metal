@@ -18,7 +18,10 @@ pytestmark = [
 
 
 @pytest.mark.parametrize("input_dtype", [ttnn.float32, ttnn.bfloat16])
-def test_kda_gated_rms_norm_matches_reference_cache_and_trace(device: ttnn.Device, input_dtype: ttnn.DataType) -> None:
+@pytest.mark.parametrize("output_dtype", [ttnn.float32, ttnn.bfloat16])
+def test_kda_gated_rms_norm_matches_reference_cache_and_trace(
+    device: ttnn.Device, input_dtype: ttnn.DataType, output_dtype: ttnn.DataType
+) -> None:
     """Cover Kimi-K3 TP8-local geometry, program reuse, and trace replay."""
     batch = 1
     sequence = 64
@@ -88,10 +91,12 @@ def test_kda_gated_rms_norm_matches_reference_cache_and_trace(device: ttnn.Devic
             epsilon=epsilon,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             compute_kernel_config=compute_config,
+            output_dtype=output_dtype,
         )
 
     with ttnn.manage_config("throw_exception_on_fallback", True):
         output_tt = run()
+    assert output_tt.dtype == output_dtype
     cache_entries = device.num_program_cache_entries()
     with ttnn.manage_config("throw_exception_on_fallback", True):
         repeated_tt = run()

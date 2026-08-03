@@ -152,7 +152,8 @@ void bind_chunk_gated_delta_rule(nb::module_& mod) {
         nb::kw_only(),
         nb::arg("epsilon") = 1e-5f,
         nb::arg("memory_config") = nb::none(),
-        nb::arg("compute_kernel_config") = nb::none());
+        nb::arg("compute_kernel_config") = nb::none(),
+        nb::arg("output_dtype") = ttnn::DataType::FLOAT32);
 
     ttnn::bind_function<"kda_causal_conv1d_split", "ttnn.transformer.">(
         mod,

@@ -415,6 +415,9 @@ void KdaGatedRmsOperation::validate_on_program_cache_miss(
     check_intermediate(in.input, "input", true);
     check(in.gate, "gate", DataType::BFLOAT16);
     check(in.weight, "weight", DataType::BFLOAT16);
+    TT_FATAL(
+        attrs.output_dtype == DataType::FLOAT32 || attrs.output_dtype == DataType::BFLOAT16,
+        "KDA gated RMS output_dtype must be FLOAT32 or BFLOAT16");
     const auto& xs = in.input.logical_shape();
     const auto& gs = in.gate.logical_shape();
     TT_FATAL(xs.rank() == 3, "KDA gated RMS input must be [B*H,T,V]");
@@ -434,7 +437,7 @@ KdaGatedRmsOperation::spec_return_value_t KdaGatedRmsOperation::compute_output_s
     const operation_attributes_t& attrs, const tensor_args_t&) {
     return {TensorSpec(
         Shape({attrs.batch, attrs.sequence, attrs.num_heads * attrs.value_dim}),
-        TensorLayout(DataType::FLOAT32, PageConfig(Layout::TILE), attrs.output_mem_config))};
+        TensorLayout(attrs.output_dtype, PageConfig(Layout::TILE), attrs.output_mem_config))};
 }
 
 KdaGatedRmsOperation::tensor_return_value_t KdaGatedRmsOperation::create_output_tensors(
@@ -450,7 +453,8 @@ Tensor kda_gated_rms_norm(
     uint32_t num_heads,
     float epsilon,
     const tt::tt_metal::MemoryConfig& output_mem_config,
-    const DeviceComputeKernelConfig& compute_kernel_config) {
+    const DeviceComputeKernelConfig& compute_kernel_config,
+    DataType output_dtype) {
     const auto& xs = input.logical_shape();
     TT_FATAL(xs.rank() == 3, "KDA gated RMS input must be [B*H,T,V]");
     TT_FATAL(num_heads > 0, "KDA gated RMS num_heads must be positive");
@@ -464,6 +468,7 @@ Tensor kda_gated_rms_norm(
             .value_dim = static_cast<uint32_t>(xs[2]),
             .epsilon = epsilon,
             .output_mem_config = output_mem_config,
+            .output_dtype = output_dtype,
             .compute_kernel_config = compute_kernel_config},
         KdaGatedRmsInputs{.input = input, .gate = gate, .weight = weight});
     return results[0];

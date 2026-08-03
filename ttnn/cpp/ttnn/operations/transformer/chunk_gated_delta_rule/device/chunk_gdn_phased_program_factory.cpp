@@ -706,7 +706,7 @@ tt::tt_metal::ProgramDescriptor KdaGatedRmsProgramFactory::create_descriptor(
     add_cb(4, 1, tt::DataFormat::Float32);
     add_cb(5, 1, tt::DataFormat::Float32);
     add_cb(6, Vt, tt::DataFormat::Float32);
-    add_cb(7, Vt, tt::DataFormat::Float32, 2);
+    add_cb(7, Vt, datatype_to_dataformat_converter(attrs.output_dtype), 2);
     add_cb(8, 1, tt::DataFormat::Float32);
 
     uint32_t eps_bits = 0;
