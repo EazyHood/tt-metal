@@ -26,6 +26,7 @@ Run every device test through `scripts/run_safe_pytest.sh`. A passing hardware r
 | `operations/test_convolution.py` | Direct fused four-tap Q/K/V convolution PCC | Yes while fused convolution remains |
 | `operations/test_halo.py` | 2D-mesh convolution-halo correctness on both TP axes | Yes while SP convolution remains |
 | `operations/test_distributed_affine.py` | Distributed-prefix equivalence, cache reuse, and trace replay | Yes while SP affine prefix remains |
+| `operations/test_gated_rms_norm.py` | Direct K3-geometry gated-RMS PCC, cache reuse, and trace replay | Yes while KDA uses the fused gated-RMS operation |
 | `model/test_layer.py` | Small synthetic composed-layer PCC, validation, segmented state, and external state | Yes |
 | `model/test_distributed_layer.py` | Synthetic SP layer PCC and segmented-prefill state continuity | Yes |
 | `model/test_weights.py` | TP placement plus TP/2D composed-layer correctness | Yes; direct placement and integration contracts |
