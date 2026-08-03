@@ -8,15 +8,12 @@ import torch.nn.functional as F
 from models.experimental.gated_attention_gated_deltanet.torch_functional.delta_rule_ops import (
     recurrent_gated_delta_rule,
 )
-from models.experimental.kimi_delta_attention.reference import (
+from models.experimental.kimi_delta_attention.reference.ops import (
     causal_depthwise_conv_reference,
-    kda_forward_reference,
     kda_gate_reference,
     kda_recurrent_reference,
     sigmoid_gated_rms_norm_reference,
-    validate_reference_weights,
 )
-from models.experimental.kimi_delta_attention.tests.utils import make_config, random_weights
 
 
 def test_causal_convolution_split_equivalence() -> None:
@@ -93,29 +90,3 @@ def test_output_norm_uses_sigmoid_gate() -> None:
     expected = normalized * weight * torch.sigmoid(gate)
 
     assert torch.equal(actual, expected)
-
-
-def test_full_layer_split_equivalence() -> None:
-    config = make_config()
-    weights = random_weights(config)
-    hidden = torch.randn(1, 6, config.hidden_size, generator=torch.Generator().manual_seed(29))
-
-    full_output, full_state = kda_forward_reference(hidden, weights, config)
-    first_output, first_state = kda_forward_reference(hidden[:, :4], weights, config)
-    last_output, split_state = kda_forward_reference(hidden[:, 4:], weights, config, first_state)
-    split_output = torch.cat((first_output, last_output), dim=1)
-
-    assert torch.allclose(full_output, split_output, rtol=1e-5, atol=1e-6)
-    assert torch.allclose(full_state.recurrent, split_state.recurrent, rtol=1e-5, atol=1e-6)
-    assert torch.equal(full_state.q_convolution, split_state.q_convolution)
-    assert torch.equal(full_state.k_convolution, split_state.k_convolution)
-    assert torch.equal(full_state.v_convolution, split_state.v_convolution)
-
-
-def test_weight_validation_reports_exact_name_and_shape(expect_error) -> None:
-    config = make_config()
-    weights = random_weights(config)
-    weights["q_proj.weight"] = torch.empty(config.q_dim, config.hidden_size + 1)
-
-    with expect_error(ValueError, r"q_proj\.weight shape .* !="):
-        validate_reference_weights(weights, config)

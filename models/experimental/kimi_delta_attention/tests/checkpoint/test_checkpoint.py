@@ -15,7 +15,7 @@ from models.experimental.kimi_delta_attention.checkpoint import (
     resolve_kda_layer_shards,
 )
 from models.experimental.kimi_delta_attention.config import KDAConfig
-from models.experimental.kimi_delta_attention.weight_schema import normalize_kda_state_dict
+from models.experimental.kimi_delta_attention.weight_schema import normalize_kda_state_dict, validate_kda_weights
 from models.experimental.kimi_delta_attention.tests.utils import random_weights
 
 
@@ -73,6 +73,15 @@ def test_rejects_index_missing_required_kda_weight(tmp_path: Path, expect_error)
 
     with expect_error(ValueError, "g_proj.weight"):
         resolve_kda_layer_shards(tmp_path, 1, config)
+
+
+def test_weight_validation_reports_exact_name_and_shape(expect_error) -> None:
+    config = _full_rank_config()
+    weights = random_weights(config)
+    weights["q_proj.weight"] = torch.empty(config.q_dim, config.hidden_size + 1)
+
+    with expect_error(ValueError, r"q_proj\.weight shape .* !="):
+        validate_kda_weights(weights, config)
 
 
 def test_normalize_state_dict_trims_kimi_k3_padded_a_log() -> None:

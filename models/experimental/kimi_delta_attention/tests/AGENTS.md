@@ -19,7 +19,8 @@ Run every device test through `scripts/run_safe_pytest.sh`. A passing hardware r
 | Test | Intent | Required? |
 |---|---|---|
 | `reference/test_config.py` | Model-config mapping and validation contracts | Yes |
-| `reference/test_reference.py` | Independent Torch operation and layer identities | Yes |
+| `reference/test_layer.py` | Stateless full-layer transition, segmented equivalence, and caller-owned state immutability | Yes |
+| `reference/test_ops.py` | Independent Torch operation identities | Yes |
 | `checkpoint/test_checkpoint.py` | Indexed-shard loading, failure contracts, and padded K3 normalization | Yes; evolve with checkpoint API |
 | `operations/test_chunk.py` | Direct `chunk_kda` PCC across layouts, shapes, fidelity, and grouped summaries | Yes |
 | `operations/test_convolution.py` | Direct fused four-tap Q/K/V convolution PCC | Yes while fused convolution remains |

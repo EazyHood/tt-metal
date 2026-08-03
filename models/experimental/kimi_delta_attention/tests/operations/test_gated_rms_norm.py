@@ -9,7 +9,7 @@ import torch
 
 import ttnn
 from models.common.utility_functions import comp_pcc, run_for_blackhole
-from models.experimental.kimi_delta_attention.reference import sigmoid_gated_rms_norm_reference
+from models.experimental.kimi_delta_attention.reference.ops import sigmoid_gated_rms_norm_reference
 
 pytestmark = [
     run_for_blackhole(),
