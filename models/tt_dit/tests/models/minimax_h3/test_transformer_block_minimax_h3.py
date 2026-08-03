@@ -201,7 +201,7 @@ def test_minimax_h3_transformer_block(
         parallel_config=parallel_config,
         is_fsdp=is_fsdp,
     )
-    tt_model.load_state_dict(torch_model.state_dict())
+    tt_model.load_torch_state_dict(torch_model.state_dict())
 
     # spatial: seq fractured on SP, hidden fractured on TP
     tt_spatial = bf16_tensor_2dshard(

@@ -117,7 +117,7 @@ def test_minimax_h3_token_refiner(
         parallel_config=parallel_config,
         is_fsdp=is_fsdp,
     )
-    tt_model.load_state_dict(torch_model.state_dict())
+    tt_model.load_torch_state_dict(torch_model.state_dict())
 
     # The text stream is short and every SP device needs the whole of it (each device later scatters
     # text rows into its own slice of the packed sequence), so it is replicated on SP and fractured
