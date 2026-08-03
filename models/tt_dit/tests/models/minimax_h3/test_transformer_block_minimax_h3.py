@@ -16,6 +16,7 @@ from ....parallel.manager import CCLManager
 from ....utils.check import assert_quality
 from ....utils.tensor import bf16_tensor_2dshard, from_torch
 from ....utils.test import ring_params_req_exact_devices, skip_if_unsupported_num_links
+from .common import randomize_norm_weights
 
 # MiniMax-H3 transformer config, shared by the `transformer/` (t2va) and `transformer_ref/` partitions.
 HIDDEN_SIZE = 5376
@@ -114,12 +115,13 @@ def test_minimax_h3_transformer_block(
     # This threshold has to be tight, and not for numerical-precision reasons: the block output is
     # `residual + gate * branch`, so the residual stream dominates it and swamps errors in the
     # modulation path. Measured at real dims with the torch reference, every plausible per-row gather
-    # bug still lands at PCC >= 0.9971 against the correct output:
-    #   all rows -> table row 0    0.9971      tags/timesteps swapped     0.9977
-    #   off-by-one modality        0.9974      row order reversed         0.9979
-    #   timestep ignored           0.9981      modality ignored           0.9989
+    # bug still lands at PCC >= 0.9959 against the correct output (measured with the norm weights
+    # randomized, see `randomize_norm_weights`):
+    #   all rows -> table row 0    0.9959      row order reversed         0.9969
+    #   off-by-one modality        0.9962      timestep ignored           0.9973
+    #   tags/timesteps swapped     0.9967      modality ignored           0.9984
     # A loose threshold (0.99, say) would therefore pass a completely broken AdaLN gather. The real
-    # implementation measures 0.999996 on both params, so 0.9995 sits clear of both bounds.
+    # implementation measures 0.999995 on both params, so 0.9995 sits clear of both bounds.
     MIN_PCC = 0.9995
 
     skip_if_unsupported_num_links(mesh_device, num_links)
@@ -156,6 +158,9 @@ def test_minimax_h3_transformer_block(
         norm_eps=NORM_EPS,
         qk_norm_eps=QK_NORM_EPS,
     ).to(torch.float32)
+    # Without this every RMSNorm weight is ones and norm weight loading is untested; see
+    # `randomize_norm_weights`.
+    randomize_norm_weights(torch_model)
     torch_model.eval()
 
     rope = MiniMaxH3RotaryPosEmbed(rope_freq_dim=ROPE_FREQ_DIM, rope_theta=ROPE_THETA)

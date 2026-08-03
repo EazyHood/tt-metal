@@ -16,6 +16,7 @@ from ....parallel.manager import CCLManager
 from ....utils.check import assert_quality
 from ....utils.tensor import bf16_tensor_2dshard, from_torch
 from ....utils.test import ring_params_req_exact_devices, skip_if_unsupported_num_links
+from .common import randomize_norm_weights
 
 # MiniMax-H3 transformer config, shared by the `transformer/` (t2va) and `transformer_ref/` partitions.
 HIDDEN_SIZE = 5376
@@ -97,6 +98,9 @@ def test_minimax_h3_attention(
         dim_head=HEAD_DIM,
         qk_norm_eps=QK_NORM_EPS,
     ).to(torch.float32)
+    # Without this the per-head norm_q/norm_k weights are all ones, so QK-norm weight loading is
+    # untested; see `randomize_norm_weights`.
+    randomize_norm_weights(torch_model)
     torch_model.eval()
 
     # Real RoPE rather than random cos/sin: MiniMax-H3 rotates only the leading 2 * 3 * rope_freq_dim
