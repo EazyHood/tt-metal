@@ -4,9 +4,7 @@
 
 from __future__ import annotations
 
-import gc
 import json
-import math
 import os
 import time
 from collections.abc import Callable, Mapping
@@ -18,7 +16,6 @@ import torch
 
 import ttnn
 from models.common.utility_functions import comp_pcc, run_for_blackhole
-from models.demos.blackhole.qwen36.tt.tp_common import _find_largest_divisor, _full_grid_crs
 from models.experimental.kimi_delta_attention.checkpoint import load_kda_layer_state_dict
 from models.experimental.kimi_delta_attention.config import KDAConfig
 from models.experimental.kimi_delta_attention.kimi_k3_config import (
@@ -53,22 +50,6 @@ _PCC_THRESHOLD = 0.98
 
 
 @dataclass(frozen=True)
-class _Endpoints:
-    output: torch.Tensor
-    recurrent: torch.Tensor
-    convolution: torch.Tensor
-
-
-@dataclass(frozen=True)
-class _Measurement:
-    endpoints: _Endpoints
-    wall_ms: float
-    program_sum_us: float
-    program_count: int
-    programs: tuple[dict[str, object], ...]
-
-
-@dataclass(frozen=True)
 class _OperationMeasurement:
     output: torch.Tensor
     wall_ms: float
@@ -76,26 +57,14 @@ class _OperationMeasurement:
     program_count: int
 
 
-class _CompositeKimiDeltaAttention(KimiDeltaAttention):
-    """One test-local composite alternative at a time; production remains unchanged."""
-
-    def __init__(
-        self,
-        *args,
-        composite: str,
-        **kwargs,
-    ) -> None:
-        super().__init__(*args, **kwargs)
-        self.composite = composite
+class _UnfusedConvolutionKimiDeltaAttention(KimiDeltaAttention):
+    """Test-local unfused convolution alternative."""
 
     def _convolve_qkv(
         self,
         qkv: ttnn.Tensor,
         sequence: int,
     ) -> tuple[ttnn.Tensor, ttnn.Tensor, ttnn.Tensor, ttnn.Tensor]:
-        if self.composite != "convolution":
-            return super()._convolve_qkv(qkv, sequence)
-
         assert self.convolution_state is not None
         config = self.config
         channels = self._convolution_width
@@ -149,58 +118,6 @@ class _CompositeKimiDeltaAttention(KimiDeltaAttention):
         v = _slice_width(output, config.q_dim + config.k_dim, channels)
         return q, k, v, new_state
 
-    def _project_output(self, output: ttnn.Tensor, *, batch: int, sequence: int) -> ttnn.Tensor:
-        if self.composite != "mmrs":
-            return super()._project_output(output, batch=batch, sequence=sequence)
-
-        assert self.tt_ccl is not None
-        output = ttnn.reshape(output, (batch, sequence, self.config.v_dim))
-        output = ttnn.typecast(output, ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-        output = ttnn.reshape(output, (1, 1, sequence, self.config.v_dim))
-        weight = self.weights.output_projection
-        output_width = weight.shape[-1]
-        grid = (8, 8)
-        per_core_n = max(1, math.ceil(output_width / ttnn.TILE_SIZE / grid[0]))
-        out_block_w_limit = max(1, per_core_n // 2)
-        if self.output_projection_out_block_w is not None:
-            out_block_w_limit = min(out_block_w_limit, self.output_projection_out_block_w)
-        program_config = ttnn.MatmulMultiCoreReuseMultiCastProgramConfig(
-            compute_with_storage_grid_size=grid,
-            in0_block_w=min(4, max(1, self.config.v_dim // ttnn.TILE_SIZE // grid[0])),
-            out_subblock_h=1,
-            out_subblock_w=1,
-            per_core_M=max(1, math.ceil(sequence / ttnn.TILE_SIZE / grid[1])),
-            per_core_N=per_core_n,
-            out_block_w=_find_largest_divisor(per_core_n, out_block_w_limit),
-            transpose_mcast=False,
-            fused_activation=None,
-            fuse_batch=False,
-            allowed_worker_cores=_full_grid_crs(grid),
-        )
-        projected = ttnn.linear(
-            output,
-            weight,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            program_config=program_config,
-            compute_kernel_config=self.compute_config,
-        )
-        topology = ttnn.get_usable_topology(
-            projected,
-            topology=ttnn.Topology.Ring,
-            cluster_axis=None if self.sequence_parallel_size == 1 else self.tensor_parallel_axis,
-        )
-        cluster_axis = None if self.sequence_parallel_size == 1 else self.tensor_parallel_axis
-        return ttnn.experimental.reduce_scatter_minimal_async(
-            projected,
-            dim=3,
-            multi_device_global_semaphore=self.tt_ccl.get_and_cycle_rs_semaphore_handles(cluster_axis),
-            barrier_semaphore=self.tt_ccl.get_and_cycle_barrier_semaphore_handle(cluster_axis),
-            num_links=self.tt_ccl.get_num_links(cluster_axis),
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
-            topology=topology,
-            cluster_axis=cluster_axis,
-        )
-
 
 def _input_tensor(hidden: torch.Tensor, mesh_device: ttnn.MeshDevice, sequence_parallel_axis: int) -> ttnn.Tensor:
     if tuple(mesh_device.shape)[sequence_parallel_axis] == 1:
@@ -227,16 +144,6 @@ def _flatten_shards(tensor: ttnn.Tensor) -> torch.Tensor:
     return torch.cat([ttnn.to_torch(shard).float().reshape(-1) for shard in ttnn.get_device_tensors(tensor)])
 
 
-def _capture_endpoints(output: ttnn.Tensor, layer: KimiDeltaAttention) -> _Endpoints:
-    assert layer.recurrent_state is not None
-    assert layer.convolution_state is not None
-    return _Endpoints(
-        output=_flatten_shards(output),
-        recurrent=_flatten_shards(layer.recurrent_state),
-        convolution=_flatten_shards(layer.convolution_state),
-    )
-
-
 def _collapse_records(records: list[dict[str, object]]) -> tuple[dict[str, object], ...]:
     per_program: dict[int, dict[str, object]] = {}
     for record in records:
@@ -253,66 +160,6 @@ def _collapse_records(records: list[dict[str, object]]) -> tuple[dict[str, objec
             }
     assert per_program, "realtime profiler returned no non-sentinel program records"
     return tuple(per_program.values())
-
-
-def _trace_wall_ms(
-    mesh_device: ttnn.MeshDevice,
-    layer: KimiDeltaAttention,
-    hidden: ttnn.Tensor,
-    repetitions: int,
-) -> float:
-    layer.reset_state(batch_size=1)
-    assert layer.recurrent_state is not None
-    assert layer.convolution_state is not None
-    layer.set_external_state(layer.recurrent_state, layer.convolution_state)
-    warm_output = layer.forward(hidden)
-    ttnn.synchronize_device(mesh_device)
-    ttnn.deallocate(warm_output)
-
-    trace_id = ttnn.begin_trace_capture(mesh_device, cq_id=0)
-    output = layer.forward(hidden)
-    ttnn.end_trace_capture(mesh_device, trace_id, cq_id=0)
-    ttnn.execute_trace(mesh_device, trace_id, cq_id=0, blocking=False)
-    ttnn.synchronize_device(mesh_device)
-    start = time.perf_counter()
-    for _ in range(repetitions):
-        ttnn.execute_trace(mesh_device, trace_id, cq_id=0, blocking=False)
-    ttnn.synchronize_device(mesh_device)
-    elapsed = time.perf_counter() - start
-    ttnn.release_trace(mesh_device, trace_id)
-    ttnn.deallocate(output)
-    return elapsed * 1e3 / repetitions
-
-
-def _measure(
-    mesh_device: ttnn.MeshDevice,
-    layer: KimiDeltaAttention,
-    hidden: ttnn.Tensor,
-    repetitions: int,
-) -> _Measurement:
-    layer.reset_state(batch_size=1)
-    warm_output = layer.forward(hidden)
-    ttnn.synchronize_device(mesh_device)
-    ttnn.deallocate(warm_output)
-
-    layer.reset_state(batch_size=1)
-    output, records = profile_realtime_program(
-        mesh_device,
-        lambda: layer.forward(hidden),
-        collect_all=True,
-        record_timeout_seconds=10.0,
-    )
-    endpoints = _capture_endpoints(output, layer)
-    ttnn.deallocate(output)
-    programs = _collapse_records(records)
-    wall_ms = _trace_wall_ms(mesh_device, layer, hidden, repetitions)
-    return _Measurement(
-        endpoints=endpoints,
-        wall_ms=wall_ms,
-        program_sum_us=sum(float(program["duration_ns"]) for program in programs) / 1e3,
-        program_count=len(programs),
-        programs=programs,
-    )
 
 
 def _measure_operation(
@@ -363,7 +210,7 @@ def _make_layer(
     state_dict: Mapping[str, torch.Tensor],
     checkpoint_dir: Path,
     tensor_parallel_axis: int,
-    composite: str | None,
+    unfused_convolution: bool,
 ) -> KimiDeltaAttention:
     kwargs = {
         "tensor_cache_path": checkpoint_dir / "ttnn_cache" / "layer_1",
@@ -371,13 +218,12 @@ def _make_layer(
         "tensor_parallel_axis": tensor_parallel_axis,
         "program_config": kimi_k3_program_config(),
     }
-    if composite is None:
+    if not unfused_convolution:
         return KimiDeltaAttention(mesh_device, config, state_dict, **kwargs)
-    return _CompositeKimiDeltaAttention(
+    return _UnfusedConvolutionKimiDeltaAttention(
         mesh_device,
         config,
         state_dict,
-        composite=composite,
         **kwargs,
     )
 
@@ -387,87 +233,6 @@ def _pcc(name: str, expected: torch.Tensor, actual: torch.Tensor) -> float:
     print(f"{name}: PCC={value:.6f}")
     assert passed, f"{name} PCC {value:.6f} < {_PCC_THRESHOLD}"
     return value
-
-
-@pytest.mark.parametrize(
-    "mesh_device,tensor_parallel_axis",
-    [((1, 8), 1), ((2, 4), 1), ((2, 4), 0)],
-    indirect=["mesh_device"],
-    ids=["SP1xTP8", "SP2xTP4", "SP4xTP2"],
-)
-@pytest.mark.parametrize("fusion", ["mmrs"])
-def test_kimi_k3_fusion_ab(
-    mesh_device: ttnn.MeshDevice,
-    tensor_parallel_axis: int,
-    fusion: str,
-    kimi_k3_checkpoint_dir: Path,
-) -> None:
-    assert ttnn.device.IsProgramRealtimeProfilerActive(), "realtime profiler must be active for KDA fusion A/B"
-    checkpoint_dir = kimi_k3_checkpoint_dir
-    config = kimi_k3_kda_config()
-    state_dict = load_kda_layer_state_dict(checkpoint_dir, KimiK3Config.FIRST_KDA_LAYER, config)
-    hidden = torch.randn(
-        1,
-        _SEQUENCE,
-        config.hidden_size,
-        generator=torch.Generator().manual_seed(1607),
-        dtype=torch.bfloat16,
-    )
-    sequence_parallel_axis = 1 - tensor_parallel_axis
-    hidden_tt = _input_tensor(hidden, mesh_device, sequence_parallel_axis)
-    repetitions = int(os.getenv("KDA_FUSION_AB_REPS", str(_REPETITIONS)))
-
-    measurements: dict[str, _Measurement] = {}
-    for path, composite in (("fused", None), ("composite", fusion)):
-        layer = _make_layer(
-            mesh_device,
-            config,
-            state_dict,
-            checkpoint_dir,
-            tensor_parallel_axis,
-            composite,
-        )
-        with ttnn.manage_config("throw_exception_on_fallback", True):
-            measurements[path] = _measure(mesh_device, layer, hidden_tt, repetitions)
-        del layer
-        gc.collect()
-
-    fused = measurements["fused"]
-    composite = measurements["composite"]
-    pcc = {
-        "output": _pcc(f"{fusion} output", fused.endpoints.output, composite.endpoints.output),
-        "recurrent": _pcc(f"{fusion} recurrent", fused.endpoints.recurrent, composite.endpoints.recurrent),
-        "convolution": _pcc(
-            f"{fusion} convolution",
-            fused.endpoints.convolution,
-            composite.endpoints.convolution,
-        ),
-    }
-    mesh_shape = tuple(mesh_device.shape)
-    sequence_parallel_size = mesh_shape[sequence_parallel_axis]
-    tensor_parallel_size = mesh_shape[tensor_parallel_axis]
-    result = {
-        "fusion": fusion,
-        "layout": f"SP{sequence_parallel_size}xTP{tensor_parallel_size}",
-        "sequence": _SEQUENCE,
-        "repetitions": repetitions,
-        "pcc": pcc,
-        "fused": {
-            "wall_ms": fused.wall_ms,
-            "program_sum_us": fused.program_sum_us,
-            "program_count": fused.program_count,
-        },
-        "composite": {
-            "wall_ms": composite.wall_ms,
-            "program_sum_us": composite.program_sum_us,
-            "program_count": composite.program_count,
-        },
-    }
-    result["fused_wall_gain_pct"] = 100.0 * (composite.wall_ms - fused.wall_ms) / composite.wall_ms
-    result["fused_program_sum_gain_pct"] = (
-        100.0 * (composite.program_sum_us - fused.program_sum_us) / composite.program_sum_us
-    )
-    print("KDA_FUSION_AB=" + json.dumps(result, sort_keys=True))
 
 
 @pytest.mark.parametrize(
@@ -495,8 +260,8 @@ def test_kimi_k3_convolution_ab(
     )
     sequence_parallel_axis = 1 - tensor_parallel_axis
     hidden_tt = _input_tensor(hidden, mesh_device, sequence_parallel_axis)
-    fused_layer = _make_layer(mesh_device, config, state_dict, checkpoint_dir, tensor_parallel_axis, None)
-    composite_layer = _make_layer(mesh_device, config, state_dict, checkpoint_dir, tensor_parallel_axis, "convolution")
+    fused_layer = _make_layer(mesh_device, config, state_dict, checkpoint_dir, tensor_parallel_axis, False)
+    composite_layer = _make_layer(mesh_device, config, state_dict, checkpoint_dir, tensor_parallel_axis, True)
     fused_layer.reset_state(batch_size=1)
     composite_layer.reset_state(batch_size=1)
     projected = fused_layer._project_inputs(hidden_tt)

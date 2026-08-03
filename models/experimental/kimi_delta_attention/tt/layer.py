@@ -4,14 +4,15 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+
 import torch
 
 import ttnn
 from models.demos.blackhole.qwen36.tt.gdn.fused_chunk import _FUSED_CHUNK_SIZE, build_fused_const_tiles
-from models.demos.blackhole.qwen36.tt.tp_common import matmul_reduce_scatter_prefill
 from models.experimental.gated_attention_gated_deltanet.tt.ttnn_delta_rule_ops import l2_norm_ttnn
 from models.experimental.kimi_delta_attention.config import KDAConfig, KDAProgramConfig
 from models.experimental.kimi_delta_attention.tt.weights import KDAWeights, load_kda_weights
@@ -24,6 +25,41 @@ def _slice_width(tensor: ttnn.Tensor, start: int, end: int) -> ttnn.Tensor:
     begin[-1] = start
     stop[-1] = end
     return ttnn.slice(tensor, tuple(begin), tuple(stop), memory_config=ttnn.DRAM_MEMORY_CONFIG)
+
+
+def _largest_divisor_at_most(value: int, limit: int) -> int:
+    for divisor in range(limit, 0, -1):
+        if value % divisor == 0:
+            return divisor
+    return 1
+
+
+def _output_projection_program_config(
+    sequence: int,
+    input_width: int,
+    output_width: int,
+    out_block_w_cap: int | None,
+) -> ttnn.MatmulMultiCoreReuseMultiCastProgramConfig:
+    grid = (8, 8)
+    per_core_n = max(1, math.ceil(output_width / ttnn.TILE_SIZE / grid[0]))
+    out_block_w_limit = max(1, per_core_n // 2)
+    if out_block_w_cap is not None:
+        out_block_w_limit = min(out_block_w_limit, out_block_w_cap)
+    return ttnn.MatmulMultiCoreReuseMultiCastProgramConfig(
+        compute_with_storage_grid_size=grid,
+        in0_block_w=min(4, max(1, input_width // ttnn.TILE_SIZE // grid[0])),
+        out_subblock_h=1,
+        out_subblock_w=1,
+        per_core_M=max(1, math.ceil(sequence / ttnn.TILE_SIZE / grid[1])),
+        per_core_N=per_core_n,
+        out_block_w=_largest_divisor_at_most(per_core_n, out_block_w_limit),
+        transpose_mcast=False,
+        fused_activation=None,
+        fuse_batch=False,
+        allowed_worker_cores=ttnn.CoreRangeSet(
+            {ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(grid[0] - 1, grid[1] - 1))}
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -267,6 +303,8 @@ class KimiDeltaAttention:
                 self.convolution_state.layout,
                 memory_config=ttnn.DRAM_MEMORY_CONFIG,
             )
+        # Retained by real-K3 T=5120 component A/B: 74.36-75.76% faster at direct Q/K/V PCC >=0.999989.
+        # Reproduce with tests/perf/test_fusion_ab.py; exact results are in perf_targets/bh_loudbox_fusion_ab.json.
         q, k, v = ttnn.transformer.kda_causal_conv1d_split(
             qkv_row_major,
             state_row_major,
@@ -400,6 +438,8 @@ class KimiDeltaAttention:
     ) -> ttnn.Tensor:
         """Apply the KDA gated RMSNorm epilogue."""
         config, weights = self.config, self.weights
+        # Retained by real-K3 T=5120 component A/B: 92.72-93.92% faster at output PCC >=0.999990.
+        # Reproduce with tests/perf/test_fusion_ab.py; exact results are in perf_targets/bh_loudbox_fusion_ab.json.
         return ttnn.transformer.kda_gated_rms_norm(
             output,
             output_gate,
@@ -422,19 +462,33 @@ class KimiDeltaAttention:
         output = ttnn.reshape(output, (batch, sequence, config.v_dim))
         if self.tensor_parallel_size > 1:
             assert self.tt_ccl is not None
-            # Keep the MMRS input and output dtypes equal: mixed page sizes corrupt the fused collective.
-            # BF16 halves the projection intermediate and reduce-scatter traffic; accumulation remains FP32.
+            # Real-K3 T=5120 full-layer A/B rejected fused MMRS: -3.84% SP2 and -1.56% SP4.
+            # Standalone matmul and RS already overlap; see perf_targets/bh_loudbox_fusion_ab.json.
             output = ttnn.typecast(output, ttnn.bfloat16, memory_config=ttnn.DRAM_MEMORY_CONFIG)
-            output = matmul_reduce_scatter_prefill(
+            output = ttnn.reshape(output, (1, batch, sequence, config.v_dim))
+            output = ttnn.linear(
                 output,
                 weights.output_projection,
-                self.tt_ccl,
-                self.compute_config,
-                ttnn.Topology.Ring,
-                self.tensor_parallel_size,
-                ttnn.bfloat16,
-                cluster_axis=None if self.sequence_parallel_size == 1 else self.tensor_parallel_axis,
-                out_block_w_cap=self.output_projection_out_block_w,
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                program_config=_output_projection_program_config(
+                    sequence,
+                    config.v_dim,
+                    weights.output_projection.shape[-1],
+                    self.output_projection_out_block_w,
+                ),
+                compute_kernel_config=self.compute_config,
+            )
+            cluster_axis = None if self.sequence_parallel_size == 1 else self.tensor_parallel_axis
+            topology = ttnn.get_usable_topology(output, topology=ttnn.Topology.Ring, cluster_axis=cluster_axis)
+            output = ttnn.experimental.reduce_scatter_minimal_async(
+                output,
+                dim=3,
+                multi_device_global_semaphore=self.tt_ccl.get_and_cycle_rs_semaphore_handles(cluster_axis),
+                barrier_semaphore=self.tt_ccl.get_and_cycle_barrier_semaphore_handle(cluster_axis),
+                num_links=self.tt_ccl.get_num_links(cluster_axis),
+                memory_config=ttnn.DRAM_MEMORY_CONFIG,
+                topology=topology,
+                cluster_axis=cluster_axis,
             )
         else:
             output = ttnn.linear(

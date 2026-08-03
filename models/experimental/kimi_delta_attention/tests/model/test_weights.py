@@ -9,11 +9,10 @@ import torch
 
 import ttnn
 from models.common.utility_functions import comp_pcc, run_for_blackhole
-from models.demos.blackhole.qwen36.tt.tp_common import matmul_reduce_scatter_prefill
 from models.experimental.kimi_delta_attention.config import KDAConfig
 from models.experimental.kimi_delta_attention.reference import kda_forward_reference
 from models.experimental.kimi_delta_attention.tests.utils import random_weights
-from models.experimental.kimi_delta_attention.tt.layer import KimiDeltaAttention
+from models.experimental.kimi_delta_attention.tt.layer import KimiDeltaAttention, _output_projection_program_config
 from models.experimental.kimi_delta_attention.tt.weights import load_kda_weights
 from models.tt_transformers.tt.ccl import TT_CCL
 
@@ -220,14 +219,33 @@ def test_2d_tp_weight_and_output_placement(
         fp32_dest_acc_en=True,
         packer_l1_acc=True,
     )
-    output = matmul_reduce_scatter_prefill(
+    value_tt = ttnn.reshape(value_tt, (1, 1, sequence, value_tt.shape[-1]))
+    output = ttnn.linear(
         value_tt,
         weights.output_projection,
-        TT_CCL(mesh_device),
-        compute_config,
-        ttnn.Topology.Ring,
-        tensor_parallel_size,
-        ttnn.bfloat16,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        program_config=_output_projection_program_config(
+            sequence,
+            value_tt.shape[-1],
+            weights.output_projection.shape[-1],
+            None,
+        ),
+        compute_kernel_config=compute_config,
+    )
+    tt_ccl = TT_CCL(mesh_device)
+    topology = ttnn.get_usable_topology(
+        output,
+        topology=ttnn.Topology.Ring,
+        cluster_axis=tensor_parallel_axis,
+    )
+    output = ttnn.experimental.reduce_scatter_minimal_async(
+        output,
+        dim=3,
+        multi_device_global_semaphore=tt_ccl.get_and_cycle_rs_semaphore_handles(tensor_parallel_axis),
+        barrier_semaphore=tt_ccl.get_and_cycle_barrier_semaphore_handle(tensor_parallel_axis),
+        num_links=tt_ccl.get_num_links(tensor_parallel_axis),
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        topology=topology,
         cluster_axis=tensor_parallel_axis,
     )
 
