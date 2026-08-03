@@ -12,16 +12,17 @@ from models.experimental.kimi_delta_attention.checkpoint import (
     kda_layer_prefix,
     load_kda_layer_state_dict,
     required_kda_weight_names,
+    normalize_kda_state_dict,
     resolve_kda_layer_shards,
 )
 from models.experimental.kimi_delta_attention.config import KDAConfig
 from models.experimental.kimi_delta_attention.tests.utils import random_weights
 
 
-def _full_rank_config() -> KDAConfig:
+def _full_rank_config(*, num_heads: int = 2) -> KDAConfig:
     return KDAConfig(
         hidden_size=64,
-        num_heads=2,
+        num_heads=num_heads,
         head_k_dim=32,
         head_v_dim=32,
         conv_kernel_size=4,
@@ -74,5 +75,22 @@ def test_rejects_index_missing_required_kda_weight(tmp_path: Path, expect_error)
         resolve_kda_layer_shards(tmp_path, 1, config)
 
 
-def test_normalizes_kimi_k3_padded_a_log() -> None:
+def test_normalize_state_dict_trims_kimi_k3_padded_a_log() -> None:
+    config = _full_rank_config(num_heads=96)
+    state_dict = random_weights(config)
     padded = torch.arange(128, dtype=torch.float32)
+    state_dict["A_log"] = padded
+
+    normalized = normalize_kda_state_dict(state_dict, config)
+
+    assert normalized["A_log"].shape == (1, 1, config.num_heads, 1)
+    torch.testing.assert_close(normalized["A_log"].reshape(-1), padded[: config.num_heads])
+
+
+def test_normalize_state_dict_rejects_unsupported_a_log_padding(expect_error) -> None:
+    config = _full_rank_config(num_heads=96)
+    state_dict = random_weights(config)
+    state_dict["A_log"] = torch.arange(127, dtype=torch.float32)
+
+    with expect_error(ValueError, "A_log has 127 entries"):
+        normalize_kda_state_dict(state_dict, config)
