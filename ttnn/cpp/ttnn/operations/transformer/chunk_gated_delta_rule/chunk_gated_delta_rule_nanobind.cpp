@@ -101,16 +101,13 @@ void bind_chunk_gated_delta_rule(nb::module_& mod) {
         nb::arg("tril") = nb::none(),
         nb::arg("ones") = nb::none(),
         nb::arg("masks") = nb::none(),
-        nb::arg("rms_gate") = nb::none(),
-        nb::arg("rms_weight") = nb::none(),
-        nb::arg("rms_epsilon") = 1e-5f,
         nb::arg("summary_group_chunks") = 8,
         nb::arg("sequence_parallel_axis") = nb::none(),
         nb::arg("affine_identity") = nb::none(),
         nb::arg("affine_zero") = nb::none(),
         nb::arg("p2p_num_links") = 1);
 
-    ttnn::bind_function<"kda_distributed_affine_prefix", "ttnn.transformer.">(
+    ttnn::bind_function<"_kda_distributed_affine_prefix", "ttnn.transformer.">(
         mod,
         R"doc(
         Compose one affine KDA partition summary per SP rank with a logarithmic

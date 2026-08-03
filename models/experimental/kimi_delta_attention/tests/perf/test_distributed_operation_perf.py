@@ -69,7 +69,7 @@ def test_kimi_k3_sp4_tp2_distributed_affine_prefix_perf(mesh_device: ttnn.MeshDe
     identity_tt = _to_device(identity_a, mesh_device, state_dims)
     zero_tt = _to_device(zero_b, mesh_device, state_dims)
 
-    warm_entry, warm_final = ttnn.transformer.kda_distributed_affine_prefix(
+    warm_entry, warm_final = ttnn.transformer._kda_distributed_affine_prefix(
         a_tt, b_tt, state_tt, identity_tt, zero_tt, sequence_parallel_axis=1, p2p_num_links=p2p_num_links
     )
     ttnn.synchronize_device(mesh_device)
@@ -77,7 +77,7 @@ def test_kimi_k3_sp4_tp2_distributed_affine_prefix_perf(mesh_device: ttnn.MeshDe
     ttnn.deallocate(warm_final)
 
     trace_id = ttnn.begin_trace_capture(mesh_device, cq_id=0)
-    entry_state, final_state = ttnn.transformer.kda_distributed_affine_prefix(
+    entry_state, final_state = ttnn.transformer._kda_distributed_affine_prefix(
         a_tt, b_tt, state_tt, identity_tt, zero_tt, sequence_parallel_axis=1, p2p_num_links=p2p_num_links
     )
     ttnn.end_trace_capture(mesh_device, trace_id, cq_id=0)

@@ -134,9 +134,6 @@ struct ChunkGdnScanParams {
     bool state_only = false;
     bool summary_pair = false;
     bool vector_gate = false;
-    bool fused_rms = false;
-    uint32_t num_heads = 0;
-    float rms_epsilon = 1e-5f;
     tt::tt_metal::MemoryConfig output_mem_config;
     DeviceComputeKernelConfig compute_kernel_config;
 };
@@ -151,8 +148,6 @@ struct ChunkGdnScanInputs {
     Tensor t_inv;                         // [BH, NC, C, C] fp32  (WY inverse)
     std::optional<Tensor> initial_state;  // [BH, K, V] fp32 or absent (zeros)
     std::optional<Tensor> identity_tile;  // [1,1,32,32] fp32; block identity when present
-    std::optional<Tensor> rms_gate;       // [B,T,H*V] bf16 when fused_rms
-    std::optional<Tensor> rms_weight;     // [V] bf16 when fused_rms
 };
 
 struct ChunkGdnScanProgramFactory {
@@ -190,10 +185,6 @@ std::vector<Tensor> chunk_gdn_scan(
     bool vector_gate = false,
     bool state_only = false,
     const std::optional<Tensor>& identity_tile = std::nullopt,
-    const std::optional<Tensor>& rms_gate = std::nullopt,
-    const std::optional<Tensor>& rms_weight = std::nullopt,
-    uint32_t num_heads = 0,
-    float rms_epsilon = 1e-5f,
     bool summary_pair = false);
 
 // ---------------------------------------------------------------------------

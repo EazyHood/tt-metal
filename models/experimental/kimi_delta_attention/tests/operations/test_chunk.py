@@ -42,8 +42,7 @@ def _assert_pcc(name: str, golden: torch.Tensor, actual: torch.Tensor, threshold
         (64, 32, 128, 128, True, True, True, "HiFi2", None),
         (256, 4, 128, 128, True, True, True, None, None),
         (512, 4, 128, 128, True, True, True, None, None),
-        (256, 2, 32, 32, True, True, True, None, 8),
-        (320, 2, 32, 32, True, True, True, None, 10),
+        (5120, 2, 32, 32, True, True, True, None, 8),
     ],
 )
 def test_chunk_kda_pcc(
@@ -57,7 +56,6 @@ def test_chunk_kda_pcc(
     flat_g: bool,
     math_fidelity: str | None,
     summary_group_chunks: int | None,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     generator = torch.Generator().manual_seed(401 + sequence + heads)
     shape = (1, sequence, heads)
@@ -86,8 +84,6 @@ def test_chunk_kda_pcc(
         if math_fidelity is not None
         else None
     )
-    if summary_group_chunks is not None:
-        monkeypatch.setenv("QWEN_KDA_GROUP_PREFIX", "1")
     with ttnn.manage_config("throw_exception_on_fallback", True):
         output_tt, final_state_tt = ttnn.transformer.chunk_kda(
             q_tt,

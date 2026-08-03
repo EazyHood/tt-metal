@@ -143,48 +143,6 @@ ttnn::Tensor slice_group_axis(
         memory_config);
 }
 
-std::pair<ttnn::Tensor, ttnn::Tensor> inclusive_affine_prefix(
-    ttnn::Tensor transform_a,
-    ttnn::Tensor transform_b,
-    uint32_t groups_per_head,
-    const tt::tt_metal::MemoryConfig& memory_config,
-    const DeviceComputeKernelConfig& compute_kernel_config) {
-    // Hillis-Steele scan: at each power-of-two distance, T[i] becomes
-    // T[i] composed after the prefix ending at i-distance.
-    for (uint32_t distance = 1; distance < groups_per_head; distance *= 2) {
-        auto leading_a = slice_group_axis(transform_a, 0, distance, memory_config);
-        auto leading_b = slice_group_axis(transform_b, 0, distance, memory_config);
-        auto after_a = slice_group_axis(transform_a, distance, groups_per_head, memory_config);
-        auto after_b = slice_group_axis(transform_b, distance, groups_per_head, memory_config);
-        auto before_a = slice_group_axis(transform_a, 0, groups_per_head - distance, memory_config);
-        auto before_b = slice_group_axis(transform_b, 0, groups_per_head - distance, memory_config);
-        auto composed_a = ttnn::matmul(
-            after_a,
-            before_a,
-            false,
-            false,
-            memory_config,
-            DataType::FLOAT32,
-            std::nullopt,
-            std::nullopt,
-            compute_kernel_config);
-        auto composed_b = ttnn::matmul(
-            after_a,
-            before_b,
-            false,
-            false,
-            memory_config,
-            DataType::FLOAT32,
-            std::nullopt,
-            std::nullopt,
-            compute_kernel_config);
-        composed_b = ttnn::add(composed_b, after_b, std::nullopt, memory_config);
-        transform_a = ttnn::concat({leading_a, composed_a}, 1, memory_config);
-        transform_b = ttnn::concat({leading_b, composed_b}, 1, memory_config);
-    }
-    return {transform_a, transform_b};
-}
-
 // Three 32x32 quadrant masks packed into one [1,1,32,96] tile-row (tile 0 = top-left,
 // tile 1 = bottom-right, tile 2 = bottom-left). Used by the prep kernel's 16x16 sub-blocked
 // WY inverse to isolate the four 16-quadrants of each 32x32 diagonal block.
@@ -320,10 +278,7 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_gated_delta_rule(
         k = pad_time_tile(k, BH, K, pad, dev);
     }
     if (!flat_v) {
-        TT_FATAL(!flat_v || pad == 0, "chunk_kda flat v requires T to be divisible by chunk_size");
-        if (!flat_v) {
-            v = pad_time_tile(v, BH, V, pad, dev);
-        }
+        v = pad_time_tile(v, BH, V, pad, dev);
     }
     // g, beta are [BH, T] TILE; pad along dim 1.
     if (pad > 0) {
@@ -507,9 +462,6 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
     const std::optional<ttnn::Tensor>& tril,
     const std::optional<ttnn::Tensor>& ones,
     const std::optional<ttnn::Tensor>& masks,
-    const std::optional<ttnn::Tensor>& rms_gate,
-    const std::optional<ttnn::Tensor>& rms_weight,
-    float rms_epsilon,
     uint32_t summary_group_chunks,
     const std::optional<uint32_t>& sequence_parallel_axis,
     const std::optional<ttnn::Tensor>& affine_identity,
@@ -623,16 +575,8 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
         /*default_approx_mode=*/false,
         /*default_fp32_acc=*/true,
         /*default_l1_acc=*/false);
-    // Selected by the storage sweep; the private env override preserves FP32 and A/B replay.
-    uint32_t prep_bf16_mask = 0x26;
-    if (const char* env = std::getenv("QWEN_KDA_PREP_BF16_MASK")) {
-        char* end = nullptr;
-        const auto parsed = std::strtoul(env, &end, 0);
-        TT_FATAL(
-            end != env && *end == '\0' && parsed <= 0xFFFFFFFFUL, "QWEN_KDA_PREP_BF16_MASK must be a uint32 integer");
-        prep_bf16_mask = static_cast<uint32_t>(parsed);
-    }
-    TT_FATAL((prep_bf16_mask & ~0x37u) == 0, "unsupported KDA prep BF16 mask 0x{:x}", prep_bf16_mask);
+    // Measured Kimi-K3 storage choice: BF16 v_beta, q_decay, and dl; other prep outputs stay FP32.
+    constexpr uint32_t prep_bf16_mask = 0x26;
     const auto prep_cb_bytes = ttnn::prim::chunk_gdn_prep_cb_size_bytes(C, K, V, true, g.dtype(), prep_bf16_mask);
     const auto prep_output_bytes_per_bank =
         chunk_gdn_prep_l1_bytes_per_bank(BH, NC, C, K, V, true, prep_bf16_mask, dev);
@@ -640,9 +584,7 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
     const bool prep_fits_l1 = prep_cb_bytes + prep_output_bytes_per_bank <= l1_largest_free_block;
     // L1 is faster for the retained small geometry, but prep tensors and the program's static CBs
     // share each worker bank. Fall back to DRAM when their exact combined footprint cannot fit.
-    const bool force_prep_dram = std::getenv("QWEN_KDA_PREP_DRAM") != nullptr;
-    const auto prep_mem =
-        distributed_prefix || force_prep_dram || !prep_fits_l1 ? ttnn::DRAM_MEMORY_CONFIG : ttnn::L1_MEMORY_CONFIG;
+    const auto prep_mem = distributed_prefix || !prep_fits_l1 ? ttnn::DRAM_MEMORY_CONFIG : ttnn::L1_MEMORY_CONFIG;
     auto prep = ttnn::prim::chunk_gdn_prep(
         q,
         k,
@@ -667,12 +609,10 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
         prep_bf16_mask);
     std::optional<std::vector<ttnn::Tensor>> grouped_scan;
     std::optional<ttnn::Tensor> distributed_final_state;
-    // Configurable affine-summary construction: contiguous chunks become one
-    // independent pseudo-head. Running the proven recurrence from zero gives B; running
+    // Contiguous chunks become one independent pseudo-head. Running the recurrence from zero gives B; running
     // from I gives A+B. State-only mode drains token outputs without materializing them.
-    const bool use_persistent_group_prefix = NC >= 160 && std::getenv("QWEN_KDA_SERIAL_SCAN") == nullptr;
-    const bool build_group_summaries = distributed_prefix || std::getenv("QWEN_KDA_GROUP_SUMMARY") != nullptr ||
-                                       std::getenv("QWEN_KDA_GROUP_PREFIX") != nullptr || use_persistent_group_prefix;
+    const bool use_persistent_group_prefix = NC >= 160;
+    const bool build_group_summaries = distributed_prefix || use_persistent_group_prefix;
     if (build_group_summaries) {
         TT_FATAL(summary_group_chunks > 0, "summary_group_chunks must be positive");
         TT_FATAL(
@@ -697,18 +637,15 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
         grouped[4] = ttnn::reshape(grouped[4], ttnn::Shape({group_heads, summary_group_chunks, K, C}));
         grouped[5] = ttnn::reshape(grouped[5], ttnn::Shape({group_heads, summary_group_chunks, K, 1}));
         grouped[6] = ttnn::reshape(grouped[6], ttnn::Shape({group_heads, summary_group_chunks, C, C}));
-        auto summary_mem = prep_mem;
-        if (std::getenv("QWEN_KDA_SUMMARY_INTERLEAVED") == nullptr) {
-            const auto summary_cores =
-                tt::tt_metal::num_cores_to_corerangeset(group_heads, dev->compute_with_storage_grid_size(), true);
-            summary_mem = ttnn::operations::data_movement::create_sharded_memory_config(
-                ttnn::Shape({group_heads, K, K}),
-                summary_cores,
-                ttnn::operations::data_movement::ShardStrategy::HEIGHT,
-                ShardOrientation::ROW_MAJOR,
-                std::array<uint32_t, 2>{K, K},
-                Layout::TILE);
-        }
+        const auto summary_cores =
+            tt::tt_metal::num_cores_to_corerangeset(group_heads, dev->compute_with_storage_grid_size(), true);
+        const auto summary_mem = ttnn::operations::data_movement::create_sharded_memory_config(
+            ttnn::Shape({group_heads, K, K}),
+            summary_cores,
+            ttnn::operations::data_movement::ShardStrategy::HEIGHT,
+            ShardOrientation::ROW_MAJOR,
+            std::array<uint32_t, 2>{K, K},
+            Layout::TILE);
         auto summaries = ttnn::prim::chunk_gdn_scan(
             grouped[0],
             grouped[1],
@@ -725,117 +662,68 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
             true,
             true,
             eye_c,
-            std::nullopt,
-            std::nullopt,
-            0,
-            1e-5f,
             true);
         auto summary_a = summaries[0];
         auto summary_b = summaries[1];
-        if (distributed_prefix || std::getenv("QWEN_KDA_GROUP_PREFIX") != nullptr || use_persistent_group_prefix) {
-            TT_FATAL(s0.has_value(), "group-prefix scan requires initial state");
-            const auto prefix_mem = distributed_prefix
-                                        ? out_mem
-                                        : (std::getenv("QWEN_KDA_PREFIX_DRAM") == nullptr ? ttnn::L1_MEMORY_CONFIG
-                                                                                          : ttnn::DRAM_MEMORY_CONFIG);
-            if (distributed_prefix) {
-                auto [partition_a, partition_b] =
-                    ttnn::prim::kda_affine_compose(summary_a, summary_b, groups_per_head, prefix_mem, kernel_cfg);
-                auto identity = ttnn::reshape(*affine_identity, ttnn::Shape({BH, K, K}));
-                auto zero = ttnn::reshape(*affine_zero, ttnn::Shape({BH, K, V}));
-                auto [partition_entry_state, final_state] = kda_distributed_affine_prefix(
-                    partition_a,
-                    partition_b,
-                    *s0,
-                    identity,
-                    zero,
-                    *sequence_parallel_axis,
-                    out_mem,
-                    kernel_cfg,
-                    p2p_num_links);
-                distributed_final_state = final_state;
-                auto group_initial_states = ttnn::prim::kda_affine_prefix(
-                    summary_a, summary_b, partition_entry_state, groups_per_head, prefix_mem, kernel_cfg);
-                grouped_scan = ttnn::prim::chunk_gdn_scan(
-                    grouped[0],
-                    grouped[1],
-                    grouped[2],
-                    grouped[3],
-                    grouped[4],
-                    grouped[5],
-                    grouped[6],
-                    group_initial_states,
-                    C,
-                    true,
-                    out_mem,
-                    kernel_cfg,
-                    true);
-            } else if (use_persistent_group_prefix) {
-                auto group_initial_states =
-                    ttnn::prim::kda_affine_prefix(summary_a, summary_b, *s0, groups_per_head, prefix_mem, kernel_cfg);
-                grouped_scan = ttnn::prim::chunk_gdn_scan(
-                    grouped[0],
-                    grouped[1],
-                    grouped[2],
-                    grouped[3],
-                    grouped[4],
-                    grouped[5],
-                    grouped[6],
-                    group_initial_states,
-                    C,
-                    true,
-                    out_mem,
-                    kernel_cfg,
-                    true);
-            } else {
-                summary_a = ttnn::reshape(summary_a, ttnn::Shape({BH, groups_per_head, K, K}));
-                auto summary_b_grouped = ttnn::reshape(summary_b, ttnn::Shape({BH, groups_per_head, K, V}));
-                auto [prefix_a, prefix_b] =
-                    inclusive_affine_prefix(summary_a, summary_b_grouped, groups_per_head, prefix_mem, kernel_cfg);
-                auto initial = ttnn::reshape(*s0, ttnn::Shape({BH, 1, K, V}));
-                auto repeated_initial = ttnn::repeat_interleave(initial, groups_per_head, 1, prefix_mem);
-                auto group_end_states = ttnn::matmul(
-                    prefix_a,
-                    repeated_initial,
-                    false,
-                    false,
-                    prefix_mem,
-                    DataType::FLOAT32,
-                    std::nullopt,
-                    std::nullopt,
-                    kernel_cfg);
-                group_end_states = ttnn::add(group_end_states, prefix_b, std::nullopt, prefix_mem);
-                auto group_initial_states = initial;
-                if (groups_per_head > 1) {
-                    group_initial_states = ttnn::concat(
-                        {initial, slice_group_axis(group_end_states, 0, groups_per_head - 1, prefix_mem)},
-                        1,
-                        prefix_mem);
-                }
-                group_initial_states = ttnn::reshape(group_initial_states, ttnn::Shape({group_heads, K, V}));
-                grouped_scan = ttnn::prim::chunk_gdn_scan(
-                    grouped[0],
-                    grouped[1],
-                    grouped[2],
-                    grouped[3],
-                    grouped[4],
-                    grouped[5],
-                    grouped[6],
-                    group_initial_states,
-                    C,
-                    true,
-                    out_mem,
-                    kernel_cfg,
-                    true);
-            }
-            (*grouped_scan)[0] = ttnn::reshape((*grouped_scan)[0], ttnn::Shape({BH, NC, C, V}));
-            auto all_final_states = ttnn::reshape((*grouped_scan)[1], ttnn::Shape({BH, groups_per_head, K, V}));
-            (*grouped_scan)[1] = ttnn::reshape(
-                slice_group_axis(all_final_states, groups_per_head - 1, groups_per_head, prefix_mem),
-                ttnn::Shape({BH, K, V}));
-            if (distributed_final_state.has_value()) {
-                (*grouped_scan)[1] = *distributed_final_state;
-            }
+        TT_FATAL(s0.has_value(), "group-prefix scan requires initial state");
+        const auto prefix_mem = distributed_prefix ? out_mem : ttnn::L1_MEMORY_CONFIG;
+        if (distributed_prefix) {
+            auto [partition_a, partition_b] =
+                ttnn::prim::kda_affine_compose(summary_a, summary_b, groups_per_head, prefix_mem, kernel_cfg);
+            auto identity = ttnn::reshape(*affine_identity, ttnn::Shape({BH, K, K}));
+            auto zero = ttnn::reshape(*affine_zero, ttnn::Shape({BH, K, V}));
+            auto [partition_entry_state, final_state] = kda_distributed_affine_prefix(
+                partition_a,
+                partition_b,
+                *s0,
+                identity,
+                zero,
+                *sequence_parallel_axis,
+                out_mem,
+                kernel_cfg,
+                p2p_num_links);
+            distributed_final_state = final_state;
+            auto group_initial_states = ttnn::prim::kda_affine_prefix(
+                summary_a, summary_b, partition_entry_state, groups_per_head, prefix_mem, kernel_cfg);
+            grouped_scan = ttnn::prim::chunk_gdn_scan(
+                grouped[0],
+                grouped[1],
+                grouped[2],
+                grouped[3],
+                grouped[4],
+                grouped[5],
+                grouped[6],
+                group_initial_states,
+                C,
+                true,
+                out_mem,
+                kernel_cfg,
+                true);
+        } else {
+            auto group_initial_states =
+                ttnn::prim::kda_affine_prefix(summary_a, summary_b, *s0, groups_per_head, prefix_mem, kernel_cfg);
+            grouped_scan = ttnn::prim::chunk_gdn_scan(
+                grouped[0],
+                grouped[1],
+                grouped[2],
+                grouped[3],
+                grouped[4],
+                grouped[5],
+                grouped[6],
+                group_initial_states,
+                C,
+                true,
+                out_mem,
+                kernel_cfg,
+                true);
+        }
+        (*grouped_scan)[0] = ttnn::reshape((*grouped_scan)[0], ttnn::Shape({BH, NC, C, V}));
+        auto all_final_states = ttnn::reshape((*grouped_scan)[1], ttnn::Shape({BH, groups_per_head, K, V}));
+        (*grouped_scan)[1] = ttnn::reshape(
+            slice_group_axis(all_final_states, groups_per_head - 1, groups_per_head, prefix_mem),
+            ttnn::Shape({BH, K, V}));
+        if (distributed_final_state.has_value()) {
+            (*grouped_scan)[1] = *distributed_final_state;
         }
     }
     std::vector<ttnn::Tensor> scan;
@@ -857,11 +745,7 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
             kernel_cfg,
             true,
             false,
-            std::nullopt,
-            rms_gate,
-            rms_weight,
-            H,
-            rms_epsilon);
+            std::nullopt);
     }
 
     std::optional<ttnn::Tensor> final_state;
@@ -869,9 +753,6 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
         final_state = ttnn::reshape(scan[1], ttnn::Shape({B, H, K, V}));
     }
     if (output_head_major && pad == 0) {
-        if (rms_gate.has_value()) {
-            return {scan[2], final_state};
-        }
         return {ttnn::reshape(scan[0], ttnn::Shape({BH, T, V})), final_state};
     }
 

@@ -444,7 +444,6 @@ class KimiDeltaAttention:
             affine_zero=self.affine_zero,
             # Kimi-K3 explicitly uses two-link tiled P2P: SP4xTP2 affine-prefix wall time improved
             # from 1.683 to 0.991 ms (41.1%, 1.70x); the one-link SP4 control also failed PCC (0.778).
-            # Generic point_to_point defaults to one link for compatibility.
             p2p_num_links=self.p2p_num_links,
         )
         assert new_recurrent_state is not None
