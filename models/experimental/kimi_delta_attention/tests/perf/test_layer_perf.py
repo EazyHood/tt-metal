@@ -41,6 +41,16 @@ pytestmark = [
 _SEQUENCE = 5120
 _REPETITIONS = 10
 _PCC_THRESHOLD = 0.98
+_PERF_TARGETS_PATH = Path(__file__).parent / "perf_targets" / "bh_loudbox.json"
+
+
+def _load_perf_target(layout: str, *, sequence: int, repetitions: int) -> tuple[float, float]:
+    targets = json.loads(_PERF_TARGETS_PATH.read_text(encoding="utf-8"))
+    workload = targets["workload"]
+    assert sequence == int(workload["sequence"]), "LoudBox targets only apply to the required sequence length"
+    assert repetitions == int(workload["repetitions"]), "LoudBox targets require the calibrated replay count"
+    target = targets["targets"][layout]
+    return float(target["reference_ms"]), float(target["max_regression_pct"])
 
 
 def _flatten_shards(tensor: ttnn.Tensor) -> torch.Tensor:
@@ -146,16 +156,26 @@ def test_kimi_k3_layer_1_perf(
     repetitions = int(os.getenv("PERF_REPS", str(_REPETITIONS)))
     wall_ms = _trace_wall_ms(mesh_device, layer, hidden_tt, repetitions)
     mesh_shape = tuple(mesh_device.shape)
+    layout = f"SP{mesh_shape[sequence_parallel_axis]}xTP{mesh_shape[tensor_parallel_axis]}"
+    reference_ms, max_regression_pct = _load_perf_target(layout, sequence=sequence, repetitions=repetitions)
+    max_wall_ms = reference_ms * (1.0 + max_regression_pct / 100.0)
     result = {
-        "layout": f"SP{mesh_shape[sequence_parallel_axis]}xTP{mesh_shape[tensor_parallel_axis]}",
+        "layout": layout,
         "sequence": sequence,
         "repetitions": repetitions,
         "pcc": pcc,
         "pcc_reference": "identical restored-state device forward",
         "trace_wall_ms": wall_ms,
+        "reference_trace_wall_ms": reference_ms,
+        "max_regression_pct": max_regression_pct,
+        "max_trace_wall_ms": max_wall_ms,
         "realtime_program_records": len(records),
         "unprofiled_forward_ms": unprofiled_ms,
         "profiled_forward_and_collection_ms": profiled_ms,
         "profile_collection_overhead_pct": 100.0 * (profiled_ms - unprofiled_ms) / unprofiled_ms,
     }
     print("KDA_LAYER_PERF=" + json.dumps(result, sort_keys=True))
+    assert wall_ms <= max_wall_ms, (
+        f"{layout} trace wall {wall_ms:.3f} ms exceeds LoudBox limit {max_wall_ms:.3f} ms "
+        f"(reference {reference_ms:.3f} ms + {max_regression_pct:.1f}%)"
+    )
