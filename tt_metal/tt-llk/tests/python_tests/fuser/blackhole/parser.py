@@ -325,6 +325,7 @@ FPU_MAP = {
         [
             _no_reuse_dest,
             _forced_unpacker("TransposeDestUnpacker"),
+            _only_32x32_tile,
         ],
     ),
 }

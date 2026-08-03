@@ -18,6 +18,7 @@ from fuser.validator import (
     OperationSchemaBase,
     PackSchema,
     UnarySfpuMathSchema,
+    _tile_dims,
 )
 from helpers.llk_params import (
     AccToDest,
@@ -143,6 +144,11 @@ _reduce_params = (
     "Reduce requires both reduce_pool and reduce_dim",
 )
 
+_only_32x32_tile = (
+    lambda s, a, b: _tile_dims(a.tile_shape) != (32, 32),
+    "Only (32, 32) tiles are supported for this operation",
+)
+
 UNPACKER_MAP = {
     "UnpackerA": (
         lambda s: UnpackerA(reuse_dest=s.reuse_dest),
@@ -215,6 +221,7 @@ FPU_MAP = {
             _no_broadcast,
             _no_transpose,
             _forced_unpacker("TransposeDestUnpacker"),
+            _only_32x32_tile,
         ],
     ),
 }
@@ -311,4 +318,11 @@ class OperationSchema(OperationSchemaBase):
     pack: List[PackEntrySchema] = Field(..., min_length=1)
 
     def _arch_validate(self):
-        pass
+        if (
+            self.math
+            and isinstance(self.math[0], FpuMathSchema)
+            and self.math[0].operation == "TransposeDest"
+        ):
+            raise ValueError(
+                "TransposeDest cannot be the first math operation: Dst must already contain data"
+            )
