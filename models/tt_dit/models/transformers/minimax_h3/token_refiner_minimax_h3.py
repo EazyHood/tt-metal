@@ -24,9 +24,9 @@ class MiniMaxH3TokenRefinerBlock(Module):
     embedding and no attention mask. The residual updates are unconditional
     (`x = x + attn(norm1(x))`, `x = x + ff(norm2(x))`).
 
-    The text stream is short and every SP device needs all of it -- each device later scatters text
-    rows into its own slice of the packed sequence -- so it is replicated on the SP axis and only
-    fractured on TP. Attention therefore runs locally with plain SDPA rather than ring attention.
+    The text stream is replicated on the SP axis and only fractured on TP. The refiner runs before the
+    packed sequence is assembled and fractured, so every SP device holds the whole text stream and
+    attention runs locally with plain SDPA rather than ring attention.
     """
 
     def __init__(
