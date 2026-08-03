@@ -168,6 +168,7 @@ def test_distributed_affine_prefix_matches_serial_and_all_gather(
             identity_tt,
             zero_tt,
             sequence_parallel_axis=sp_axis,
+            p2p_num_links=2,
         )
     cache_entries = mesh_device.num_program_cache_entries()
     with ttnn.manage_config("throw_exception_on_fallback", True):
@@ -178,6 +179,7 @@ def test_distributed_affine_prefix_matches_serial_and_all_gather(
             identity_tt,
             zero_tt,
             sequence_parallel_axis=sp_axis,
+            p2p_num_links=2,
         )
     ttnn.synchronize_device(mesh_device)
     assert mesh_device.num_program_cache_entries() == cache_entries
@@ -191,6 +193,7 @@ def test_distributed_affine_prefix_matches_serial_and_all_gather(
             identity_tt,
             zero_tt,
             sequence_parallel_axis=sp_axis,
+            p2p_num_links=2,
         )
     ttnn.end_trace_capture(mesh_device, trace_id, cq_id=0)
     for _ in range(2):

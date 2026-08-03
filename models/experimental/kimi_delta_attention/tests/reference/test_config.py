@@ -4,8 +4,12 @@
 
 import pytest
 
-from models.experimental.kimi_delta_attention.config import KDAConfig
-from models.experimental.kimi_delta_attention.kimi_k3_config import KimiK3Config, kimi_k3_kda_config
+from models.experimental.kimi_delta_attention.config import KDAConfig, KDAProgramConfig
+from models.experimental.kimi_delta_attention.kimi_k3_config import (
+    KimiK3Config,
+    kimi_k3_kda_config,
+    kimi_k3_program_config,
+)
 
 
 def test_target_config_mapping() -> None:
@@ -37,6 +41,16 @@ def test_kimi_k3_config_mapping() -> None:
     assert config.conv_kernel_size == 4
     assert config.use_full_rank_gate
     assert config.gate_lower_bound == -5.0
+
+
+def test_program_config_p2p_links() -> None:
+    assert KDAProgramConfig().p2p_num_links == 1
+    assert kimi_k3_program_config().p2p_num_links == 2
+
+
+def test_program_config_rejects_nonpositive_p2p_links(expect_error) -> None:
+    with expect_error(ValueError, "p2p_num_links"):
+        KDAProgramConfig(p2p_num_links=0)
 
 
 @pytest.mark.parametrize("field", ["hidden_size", "num_heads", "head_k_dim", "head_v_dim"])

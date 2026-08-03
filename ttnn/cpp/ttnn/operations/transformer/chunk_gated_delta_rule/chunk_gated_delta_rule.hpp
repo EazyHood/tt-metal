@@ -84,7 +84,8 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
     uint32_t summary_group_chunks = 8,
     const std::optional<uint32_t>& sequence_parallel_axis = std::nullopt,
     const std::optional<ttnn::Tensor>& affine_identity = std::nullopt,
-    const std::optional<ttnn::Tensor>& affine_zero = std::nullopt);
+    const std::optional<ttnn::Tensor>& affine_zero = std::nullopt,
+    uint32_t p2p_num_links = 1);
 
 /**
  * Logarithmic affine prefix over sequence partitions of one 2D mesh tensor.
@@ -102,7 +103,8 @@ std::tuple<ttnn::Tensor, ttnn::Tensor> kda_distributed_affine_prefix(
     const ttnn::Tensor& zero_b,
     uint32_t sequence_parallel_axis,
     const std::optional<ttnn::MemoryConfig>& memory_config = std::nullopt,
-    const std::optional<ttnn::DeviceComputeKernelConfig>& compute_kernel_config = std::nullopt);
+    const std::optional<ttnn::DeviceComputeKernelConfig>& compute_kernel_config = std::nullopt,
+    uint32_t p2p_num_links = 1);
 
 /** Exchange the three-row causal-convolution carry along the SP mesh axis. */
 std::tuple<ttnn::Tensor, ttnn::Tensor> kda_convolution_halo(

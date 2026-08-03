@@ -59,6 +59,7 @@ def test_kimi_k3_sp4_tp2_distributed_affine_prefix_perf(mesh_device: ttnn.MeshDe
     initial_state = 0.001 * torch.randn(_BATCH, _GLOBAL_HEADS, _DIM, _DIM, generator=generator)
     identity_a = eye.expand(_BATCH, _GLOBAL_HEADS, -1, -1).clone()
     zero_b = torch.zeros_like(identity_a)
+    p2p_num_links = int(os.getenv("KDA_P2P_NUM_LINKS", "2"))
 
     transform_dims = (1, 0)
     state_dims = (1, None)
@@ -69,7 +70,7 @@ def test_kimi_k3_sp4_tp2_distributed_affine_prefix_perf(mesh_device: ttnn.MeshDe
     zero_tt = _to_device(zero_b, mesh_device, state_dims)
 
     warm_entry, warm_final = ttnn.transformer.kda_distributed_affine_prefix(
-        a_tt, b_tt, state_tt, identity_tt, zero_tt, sequence_parallel_axis=1
+        a_tt, b_tt, state_tt, identity_tt, zero_tt, sequence_parallel_axis=1, p2p_num_links=p2p_num_links
     )
     ttnn.synchronize_device(mesh_device)
     ttnn.deallocate(warm_entry)
@@ -77,7 +78,7 @@ def test_kimi_k3_sp4_tp2_distributed_affine_prefix_perf(mesh_device: ttnn.MeshDe
 
     trace_id = ttnn.begin_trace_capture(mesh_device, cq_id=0)
     entry_state, final_state = ttnn.transformer.kda_distributed_affine_prefix(
-        a_tt, b_tt, state_tt, identity_tt, zero_tt, sequence_parallel_axis=1
+        a_tt, b_tt, state_tt, identity_tt, zero_tt, sequence_parallel_axis=1, p2p_num_links=p2p_num_links
     )
     ttnn.end_trace_capture(mesh_device, trace_id, cq_id=0)
     ttnn.execute_trace(mesh_device, trace_id, cq_id=0, blocking=False)
@@ -94,7 +95,8 @@ def test_kimi_k3_sp4_tp2_distributed_affine_prefix_perf(mesh_device: ttnn.MeshDe
     print(
         f"Distributed affine prefix SP{_SP_SIZE}xTP{_TP_SIZE} "
         f"shape=[1,{_GLOBAL_HEADS // _TP_SIZE},{_DIM},{_DIM}]: "
-        f"wall={elapsed * 1e3 / repetitions:.3f} ms/replay over {repetitions} replays"
+        f"links={p2p_num_links}: wall={elapsed * 1e3 / repetitions:.3f} ms/replay "
+        f"over {repetitions} replays"
     )
 
     ttnn.release_trace(mesh_device, trace_id)

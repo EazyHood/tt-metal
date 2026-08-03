@@ -513,7 +513,8 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
     uint32_t summary_group_chunks,
     const std::optional<uint32_t>& sequence_parallel_axis,
     const std::optional<ttnn::Tensor>& affine_identity,
-    const std::optional<ttnn::Tensor>& affine_zero) {
+    const std::optional<ttnn::Tensor>& affine_zero,
+    uint32_t p2p_num_links) {
     const auto& qs = q_in.logical_shape();
     const auto& vs = v_in.logical_shape();
     const auto& gs = g_in.logical_shape();
@@ -536,6 +537,7 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
         distributed_prefix == affine_identity.has_value() && distributed_prefix == affine_zero.has_value(),
         "sequence_parallel_axis, affine_identity, and affine_zero must be provided together");
     TT_FATAL(!distributed_prefix || *sequence_parallel_axis < 2, "sequence_parallel_axis must be 0 or 1");
+    TT_FATAL(p2p_num_links > 0, "p2p_num_links must be positive");
     TT_FATAL(chunk_size == 32, "chunk_kda currently requires chunk_size=32, got {}", chunk_size);
     TT_FATAL(
         k_in.logical_shape() == qs && qs[0] == B && qs[1] == T &&
@@ -742,7 +744,15 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
                 auto identity = ttnn::reshape(*affine_identity, ttnn::Shape({BH, K, K}));
                 auto zero = ttnn::reshape(*affine_zero, ttnn::Shape({BH, K, V}));
                 auto [partition_entry_state, final_state] = kda_distributed_affine_prefix(
-                    partition_a, partition_b, *s0, identity, zero, *sequence_parallel_axis, out_mem, kernel_cfg);
+                    partition_a,
+                    partition_b,
+                    *s0,
+                    identity,
+                    zero,
+                    *sequence_parallel_axis,
+                    out_mem,
+                    kernel_cfg,
+                    p2p_num_links);
                 distributed_final_state = final_state;
                 auto group_initial_states = ttnn::prim::kda_affine_prefix(
                     summary_a, summary_b, partition_entry_state, groups_per_head, prefix_mem, kernel_cfg);
@@ -887,8 +897,10 @@ std::tuple<ttnn::Tensor, ttnn::Tensor> kda_distributed_affine_prefix(
     const ttnn::Tensor& zero_b,
     uint32_t sequence_parallel_axis,
     const std::optional<ttnn::MemoryConfig>& memory_config,
-    const std::optional<ttnn::DeviceComputeKernelConfig>& compute_kernel_config) {
+    const std::optional<ttnn::DeviceComputeKernelConfig>& compute_kernel_config,
+    uint32_t p2p_num_links) {
     TT_FATAL(sequence_parallel_axis < 2, "sequence_parallel_axis must be 0 or 1");
+    TT_FATAL(p2p_num_links > 0, "p2p_num_links must be positive");
     TT_FATAL(
         transform_a.logical_shape() == transform_b.logical_shape() &&
             transform_a.logical_shape() == initial_state.logical_shape() &&
@@ -947,7 +959,8 @@ std::tuple<ttnn::Tensor, ttnn::Tensor> kda_distributed_affine_prefix(
                 coordinate(destination - 1, tp_rank),
                 ttnn::ccl::Topology::Linear,
                 entry_state_transport,
-                std::nullopt);
+                std::nullopt,
+                p2p_num_links);
         }
         entry_state = ttnn::typecast(entry_state_transport, DataType::FLOAT32, out_mem);
         carry = matmul_bf16(transform_a_compute, entry_state_transport);

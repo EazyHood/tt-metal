@@ -22,12 +22,14 @@ struct PointToPointOp {
         const MeshCoordinate& receive_coord;
         const MeshCoordinate& send_coord;
         const ::ttnn::ccl::Topology topology;
+        const uint32_t num_links;
 
         // put this in here to hash on tensor spec
         const tt::tt_metal::TensorSpec _input_tensor_spec;
 
-        static constexpr auto attribute_names = std::forward_as_tuple("send_coord", "receive_coord", "topology");
-        auto attribute_values() const { return std::forward_as_tuple(send_coord, receive_coord, topology); };
+        static constexpr auto attribute_names =
+            std::forward_as_tuple("send_coord", "receive_coord", "topology", "num_links");
+        auto attribute_values() const { return std::forward_as_tuple(send_coord, receive_coord, topology, num_links); };
     };
 
     struct tensor_args_t {
@@ -130,7 +132,8 @@ ttnn::operations::point_to_point::PointToPointOp::tensor_return_value_t point_to
     const MeshCoordinate& receiver_coord,
     const MeshCoordinate& sender_coord,
     const std::optional<ttnn::Tensor>& optional_output_tensor = std::nullopt,
-    const std::optional<ttnn::Tensor>& optional_intermediate_tensor = std::nullopt);
+    const std::optional<ttnn::Tensor>& optional_intermediate_tensor = std::nullopt,
+    uint32_t num_links = 1);
 }  // namespace prim
 
 namespace device_operation {
@@ -149,8 +152,7 @@ namespace device_operation {
 template <>
 struct extract_tensor_buffers_t<::ttnn::operations::point_to_point::PointToPointOp::tensor_args_t, void> {
     template <typename Out>
-    static void call(
-        const ::ttnn::operations::point_to_point::PointToPointOp::tensor_args_t& args, Out& out) {
+    static void call(const ::ttnn::operations::point_to_point::PointToPointOp::tensor_args_t& args, Out& out) {
         out.push_back(args.input_tensor.buffer());
     }
 };

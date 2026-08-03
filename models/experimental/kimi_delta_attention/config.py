@@ -87,8 +87,11 @@ class KDAProgramConfig:
     summary_group_chunks: int = 8
     output_projection_out_block_w: int | None = None
     recurrent_state_dtype: ttnn.DataType = ttnn.float32
+    p2p_num_links: int = 1
 
     def __post_init__(self) -> None:
+        if self.p2p_num_links <= 0:
+            raise ValueError(f"p2p_num_links must be positive, got {self.p2p_num_links}")
         if self.summary_group_chunks <= 0:
             raise ValueError(f"summary_group_chunks must be positive, got {self.summary_group_chunks}")
         if self.output_projection_out_block_w is not None and self.output_projection_out_block_w <= 0:

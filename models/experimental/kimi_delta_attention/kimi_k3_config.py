@@ -57,4 +57,6 @@ def kimi_k3_program_config() -> KDAProgramConfig:
         # 160 local chunks / 20 = 8 groups/head; TP8 uses 12 * 8 = 96 owners.
         summary_group_chunks=KimiK3Config.KDA_SUMMARY_GROUP_CHUNKS,
         output_projection_out_block_w=KimiK3Config.KDA_OUTPUT_PROJECTION_OUT_BLOCK_W,
+        # SP4xTP2 affine-prefix A/B: 1.683 ms with one link vs 0.991 ms with two; generic P2P defaults to one.
+        p2p_num_links=2,
     )

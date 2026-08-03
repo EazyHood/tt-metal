@@ -100,6 +100,7 @@ Fabric1DRoute fabric_1d_routing(
 
 void PointToPointOp::validate(const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
     const auto& input_tensor = tensor_args.input_tensor;
+    TT_FATAL(operation_attributes.num_links > 0, "num_links must be positive");
     TT_FATAL(!input_tensor.is_sharded(), "Point to point does not yet support sharded configs");
 
     auto* mesh_device = input_tensor.device();
@@ -267,10 +268,12 @@ ttnn::operations::point_to_point::PointToPointOp::tensor_return_value_t point_to
     const MeshCoordinate& receiver_coord,
     const MeshCoordinate& sender_coord,
     const std::optional<ttnn::Tensor>& optional_output_tensor,
-    const std::optional<ttnn::Tensor>& optional_intermediate_tensor) {
+    const std::optional<ttnn::Tensor>& optional_intermediate_tensor,
+    uint32_t num_links) {
     using OperationType = ttnn::operations::point_to_point::PointToPointOp;
     return ttnn::device_operation::launch<OperationType>(
-        OperationType::operation_attributes_t{receiver_coord, sender_coord, topology, input_tensor.tensor_spec()},
+        OperationType::operation_attributes_t{
+            receiver_coord, sender_coord, topology, num_links, input_tensor.tensor_spec()},
         OperationType::tensor_args_t{input_tensor, optional_output_tensor, optional_intermediate_tensor});
 }
 }  // namespace ttnn::prim

@@ -21,9 +21,10 @@ ttnn::Tensor point_to_point_wrapper(
     const MeshCoordinate& receiver_coord,
     const std::optional<ttnn::Tensor>& output_tensor,
     const std::optional<ttnn::Tensor>& intermediate_tensor,
-    const ::ttnn::ccl::Topology topology) {
+    const ::ttnn::ccl::Topology topology,
+    uint32_t num_links) {
     return ttnn::point_to_point(
-        input_tensor, receiver_coord, sender_coord, topology, output_tensor, intermediate_tensor);
+        input_tensor, receiver_coord, sender_coord, topology, output_tensor, intermediate_tensor, num_links);
 }
 
 }  // namespace
@@ -43,6 +44,7 @@ void bind_point_to_point(nb::module_& mod) {
 
             Keyword Args:
                 topology (ttnn.Topology): Fabric topology.
+                num_links (int): Maximum fabric links used by tiled transfers. Defaults to 1.
                 output_tensor (ttnn.Tensor,optional): Optional output tensor.
                 intermediate_tensor (ttnn.Tensor,optional): Optional intermediate tensor.
 
@@ -76,7 +78,8 @@ void bind_point_to_point(nb::module_& mod) {
         nb::kw_only(),
         nb::arg("output_tensor") = nb::none(),
         nb::arg("intermediate_tensor") = nb::none(),
-        nb::arg("topology").noconvert() = ::ttnn::ccl::Topology::Linear);
+        nb::arg("topology").noconvert() = ::ttnn::ccl::Topology::Linear,
+        nb::arg("num_links") = 1);
     mod.def(
         "p2p_compute_intermediate_tensor_spec",
         operations::point_to_point::p2p_compute_intermediate_tensor_spec,

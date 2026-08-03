@@ -13,7 +13,8 @@ ttnn::Tensor point_to_point(
     const MeshCoordinate& sender_coord,
     const ::ttnn::ccl::Topology topology,
     const std::optional<ttnn::Tensor>& optional_output_tensor,
-    const std::optional<ttnn::Tensor>& optional_intermediate_tensor) {
+    const std::optional<ttnn::Tensor>& optional_intermediate_tensor,
+    uint32_t num_links) {
     // Same-device transfer whose output aliases the input is a pure no-op — return the output
     // directly WITHOUT entering the device op. Otherwise it registers a program-cache entry
     // whose writer buffer aliases the input; a later same-shape call with a *distinct*
@@ -31,7 +32,7 @@ ttnn::Tensor point_to_point(
         // launch(), so an invalid call throws before any cache entry is created.
         using OpT = ttnn::operations::point_to_point::PointToPointOp;
         OpT::validate_on_program_cache_miss(
-            OpT::operation_attributes_t{receiver_coord, sender_coord, topology, input_tensor.tensor_spec()},
+            OpT::operation_attributes_t{receiver_coord, sender_coord, topology, num_links, input_tensor.tensor_spec()},
             OpT::tensor_args_t{input_tensor, optional_output_tensor, optional_intermediate_tensor});
         return optional_output_tensor.value();
     }
@@ -43,7 +44,8 @@ ttnn::Tensor point_to_point(
                receiver_coord,
                sender_coord,
                optional_output_tensor,
-               optional_intermediate_tensor)
+               optional_intermediate_tensor,
+               num_links)
         .at(1);
 }
 
@@ -54,7 +56,7 @@ tt::tt_metal::TensorSpec p2p_compute_intermediate_tensor_spec(
     const MeshCoordinate& receiver_coord,
     const MeshCoordinate& sender_coord,
     const ::ttnn::ccl::Topology topology) {
-    PointToPointOp::operation_attributes_t attrs{receiver_coord, sender_coord, topology, input_tensor.tensor_spec()};
+    PointToPointOp::operation_attributes_t attrs{receiver_coord, sender_coord, topology, 1, input_tensor.tensor_spec()};
     PointToPointOp::tensor_args_t tensors{input_tensor, std::nullopt, std::nullopt};
 
     return PointToPointOp::compute_output_specs(attrs, tensors).at(0);

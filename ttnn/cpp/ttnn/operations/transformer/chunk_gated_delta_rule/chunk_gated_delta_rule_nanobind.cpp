@@ -107,7 +107,8 @@ void bind_chunk_gated_delta_rule(nb::module_& mod) {
         nb::arg("summary_group_chunks") = 8,
         nb::arg("sequence_parallel_axis") = nb::none(),
         nb::arg("affine_identity") = nb::none(),
-        nb::arg("affine_zero") = nb::none());
+        nb::arg("affine_zero") = nb::none(),
+        nb::arg("p2p_num_links") = 1);
 
     ttnn::bind_function<"kda_distributed_affine_prefix", "ttnn.transformer.">(
         mod,
@@ -125,7 +126,8 @@ void bind_chunk_gated_delta_rule(nb::module_& mod) {
         nb::kw_only(),
         nb::arg("sequence_parallel_axis"),
         nb::arg("memory_config") = nb::none(),
-        nb::arg("compute_kernel_config") = nb::none());
+        nb::arg("compute_kernel_config") = nb::none(),
+        nb::arg("p2p_num_links") = 1);
 
     ttnn::bind_function<"kda_convolution_halo", "ttnn.transformer.">(
         mod,

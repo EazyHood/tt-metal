@@ -18,7 +18,8 @@ ttnn::Tensor point_to_point(
     const MeshCoordinate& sender_coord,
     ::ttnn::ccl::Topology topology = ::ttnn::ccl::Topology::Linear,
     const std::optional<ttnn::Tensor>& optional_output_tensor = std::nullopt,
-    const std::optional<ttnn::Tensor>& optional_intermediate_tensor = std::nullopt);
+    const std::optional<ttnn::Tensor>& optional_intermediate_tensor = std::nullopt,
+    uint32_t num_links = 1);
 
 namespace operations::point_to_point {
 
