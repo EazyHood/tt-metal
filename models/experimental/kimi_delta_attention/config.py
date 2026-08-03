@@ -88,6 +88,7 @@ class KDAProgramConfig:
     output_projection_out_block_w: int | None = None
     recurrent_state_dtype: ttnn.DataType = ttnn.float32
     p2p_num_links: int = 1
+    affine_summary_dtype: ttnn.DataType = ttnn.float32
 
     def __post_init__(self) -> None:
         if self.p2p_num_links <= 0:
@@ -101,4 +102,8 @@ class KDAProgramConfig:
         if self.recurrent_state_dtype not in (ttnn.float32, ttnn.bfloat16):
             raise ValueError(
                 "recurrent_state_dtype must be ttnn.float32 or ttnn.bfloat16, " f"got {self.recurrent_state_dtype}"
+            )
+        if self.affine_summary_dtype not in (ttnn.float32, ttnn.bfloat16):
+            raise ValueError(
+                "affine_summary_dtype must be ttnn.float32 or ttnn.bfloat16, " f"got {self.affine_summary_dtype}"
             )

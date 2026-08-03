@@ -4,6 +4,7 @@
 
 import pytest
 
+import ttnn
 from models.experimental.kimi_delta_attention.config import KDAConfig, KDAProgramConfig
 from models.experimental.kimi_delta_attention.kimi_k3_config import (
     KimiK3Config,
@@ -46,6 +47,11 @@ def test_kimi_k3_config_mapping() -> None:
 def test_program_config_p2p_links() -> None:
     assert KDAProgramConfig().p2p_num_links == 1
     assert kimi_k3_program_config().p2p_num_links == 2
+
+
+def test_program_config_affine_summary_dtype() -> None:
+    assert KDAProgramConfig().affine_summary_dtype == ttnn.float32
+    assert kimi_k3_program_config().affine_summary_dtype == ttnn.bfloat16
 
 
 def test_program_config_rejects_nonpositive_p2p_links(expect_error) -> None:

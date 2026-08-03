@@ -587,18 +587,17 @@ tt::tt_metal::ProgramDescriptor KdaAffinePrefixProgramFactory::create_descriptor
     const auto& cores = dist.core_set;
 
     ProgramDescriptor desc;
-    auto add_cb = [&](uint32_t index, uint32_t tiles) {
-        const uint32_t tile_size = tt::tile_size(tt::DataFormat::Float32);
+    auto add_cb = [&](uint32_t index, uint32_t tiles, tt::DataFormat format = tt::DataFormat::Float32) {
+        const uint32_t tile_size = tt::tile_size(format);
         desc.cbs.push_back(CBDescriptor{
             .total_size = tiles * tile_size,
             .core_ranges = cores,
             .format_descriptors = {{CBFormatDescriptor{
-                .buffer_index = static_cast<uint8_t>(index),
-                .data_format = tt::DataFormat::Float32,
-                .page_size = tile_size}}}});
+                .buffer_index = static_cast<uint8_t>(index), .data_format = format, .page_size = tile_size}}}});
     };
-    add_cb(0, kk);   // input A
-    add_cb(1, kv);   // input B
+    const auto summary_format = tt::tt_metal::datatype_to_dataformat_converter(in.transform_a.dtype());
+    add_cb(0, kk, summary_format);  // BF16 input A
+    add_cb(1, kv, summary_format);  // BF16 input B
     add_cb(2, kk);   // prefix A ping
     add_cb(3, kv);   // prefix B ping
     add_cb(4, kk);   // prefix A pong

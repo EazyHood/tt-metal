@@ -299,8 +299,9 @@ KdaAffinePrefixOperation::program_factory_t KdaAffinePrefixOperation::select_pro
 
 void KdaAffinePrefixOperation::validate_on_program_cache_miss(
     const operation_attributes_t& attrs, const tensor_args_t& in) {
-    check(in.transform_a, "transform_a", DataType::FLOAT32);
-    check(in.transform_b, "transform_b", DataType::FLOAT32);
+    check_intermediate(in.transform_a, "transform_a", true);
+    check_intermediate(in.transform_b, "transform_b", true);
+    TT_FATAL(in.transform_a.dtype() == in.transform_b.dtype(), "KDA affine summaries must have the same dtype");
     const auto& as = in.transform_a.logical_shape();
     const auto& bs = in.transform_b.logical_shape();
     TT_FATAL(as.rank() == 3 && bs.rank() == 3, "KDA affine prefix expects rank-3 transforms");

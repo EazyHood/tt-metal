@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import ttnn
+
 from models.experimental.kimi_delta_attention.config import KDAConfig, KDAProgramConfig
 
 
@@ -59,4 +61,5 @@ def kimi_k3_program_config() -> KDAProgramConfig:
         output_projection_out_block_w=KimiK3Config.KDA_OUTPUT_PROJECTION_OUT_BLOCK_W,
         # SP4xTP2 affine-prefix A/B: 1.683 ms with one link vs 0.991 ms with two; generic P2P defaults to one.
         p2p_num_links=2,
+        affine_summary_dtype=ttnn.bfloat16,
     )

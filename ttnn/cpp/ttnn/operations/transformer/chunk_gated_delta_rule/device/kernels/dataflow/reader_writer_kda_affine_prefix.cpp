@@ -50,17 +50,22 @@ void kernel_main() {
     const uint32_t coordinator_x = get_arg_val<uint32_t>(11);
     const uint32_t coordinator_y = get_arg_val<uint32_t>(12);
 
-    const uint32_t tile_bytes = get_tile_size(cb_initial_a);
-    const auto a_accessor = TensorAccessor(a_args, a_addr, tile_bytes);
-    const auto b_accessor = TensorAccessor(b_args, b_addr, tile_bytes);
-    const auto s_accessor = TensorAccessor(s_args, s_addr, tile_bytes);
-    const auto output_a_accessor = TensorAccessor(output_a_args, output_a_addr, tile_bytes);
-    const auto output_b_accessor = TensorAccessor(output_b_args, output_b_addr, tile_bytes);
+    const uint32_t input_a_tile_bytes = get_tile_size(cb_initial_a);
+    const uint32_t input_b_tile_bytes = get_tile_size(cb_initial_b);
+    const uint32_t stage_a_tile_bytes = get_tile_size(cb_stage_a_ping);
+    const uint32_t stage_b_tile_bytes = get_tile_size(cb_stage_b_ping);
+    const uint32_t state_tile_bytes = get_tile_size(cb_initial_state);
+    const uint32_t output_tile_bytes = get_tile_size(cb_output);
+    const auto a_accessor = TensorAccessor(a_args, a_addr, input_a_tile_bytes);
+    const auto b_accessor = TensorAccessor(b_args, b_addr, input_b_tile_bytes);
+    const auto s_accessor = TensorAccessor(s_args, s_addr, state_tile_bytes);
+    const auto output_a_accessor = TensorAccessor(output_a_args, output_a_addr, output_tile_bytes);
+    const auto output_b_accessor = TensorAccessor(output_b_args, output_b_addr, output_tile_bytes);
     Noc noc;
 
     auto worker_x = [&](uint32_t worker) { return get_arg_val<uint32_t>(13 + 2 * worker); };
     auto worker_y = [&](uint32_t worker) { return get_arg_val<uint32_t>(14 + 2 * worker); };
-    auto read_tiles = [&](const auto& accessor, uint32_t cb_id, uint32_t page, uint32_t tiles) {
+    auto read_tiles = [&](const auto& accessor, uint32_t cb_id, uint32_t page, uint32_t tiles, uint32_t tile_bytes) {
         CircularBuffer cb(cb_id);
         cb.reserve_back(tiles);
         for (uint32_t tile = 0; tile < tiles; tile++) {
@@ -69,10 +74,10 @@ void kernel_main() {
         noc.async_read_barrier();
         cb.push_back(tiles);
     };
-    read_tiles(a_accessor, cb_initial_a, worker_index * kk, kk);
-    read_tiles(b_accessor, cb_initial_b, worker_index * kv, kv);
+    read_tiles(a_accessor, cb_initial_a, worker_index * kk, kk, input_a_tile_bytes);
+    read_tiles(b_accessor, cb_initial_b, worker_index * kv, kv, input_b_tile_bytes);
     if constexpr (!compose_only) {
-        read_tiles(s_accessor, cb_initial_state, (worker_index / G) * kv, kv);
+        read_tiles(s_accessor, cb_initial_state, (worker_index / G) * kv, kv, state_tile_bytes);
     }
 
     uint32_t completed_stages = 0;
@@ -95,11 +100,11 @@ void kernel_main() {
         noc_async_write(
             get_read_ptr(current_a),
             get_noc_addr(worker_x(target), worker_y(target), get_write_ptr(cb_remote_a)),
-            kk * tile_bytes);
+            kk * stage_a_tile_bytes);
         noc_async_write(
             get_read_ptr(current_b),
             get_noc_addr(worker_x(target), worker_y(target), get_write_ptr(cb_remote_b)),
-            kv * tile_bytes);
+            kv * stage_b_tile_bytes);
         noc_async_write_barrier();
         noc_semaphore_inc(get_noc_addr(worker_x(target), worker_y(target), get_semaphore(ready_sem)), 1);
     };
@@ -151,16 +156,16 @@ void kernel_main() {
                 noc.async_write(
                     prefix_a,
                     output_a_accessor,
-                    tile_bytes,
-                    {.offset_bytes = tile * tile_bytes},
+                    output_tile_bytes,
+                    {.offset_bytes = tile * output_tile_bytes},
                     {.page_id = head * kk + tile});
             }
             for (uint32_t tile = 0; tile < kv; tile++) {
                 noc.async_write(
                     prefix_b,
                     output_b_accessor,
-                    tile_bytes,
-                    {.offset_bytes = tile * tile_bytes},
+                    output_tile_bytes,
+                    {.offset_bytes = tile * output_tile_bytes},
                     {.page_id = head * kv + tile});
             }
             noc.async_write_barrier();
@@ -184,8 +189,8 @@ void kernel_main() {
         noc.async_write(
             output,
             output_a_accessor,
-            tile_bytes,
-            {.offset_bytes = tile * tile_bytes},
+            output_tile_bytes,
+            {.offset_bytes = tile * output_tile_bytes},
             {.page_id = worker_index * kv + tile});
     }
     noc.async_write_barrier();

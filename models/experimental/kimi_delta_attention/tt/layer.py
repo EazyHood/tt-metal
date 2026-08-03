@@ -113,6 +113,7 @@ class KimiDeltaAttention:
         self.output_projection_out_block_w = program_config.output_projection_out_block_w
         self.recurrent_state_dtype = program_config.recurrent_state_dtype
         self.p2p_num_links = program_config.p2p_num_links
+        self.affine_summary_dtype = program_config.affine_summary_dtype
         if weights is not None and state_dict:
             raise ValueError("pass either constructed KDAWeights or host state_dict, not both")
         if weights is None:
@@ -445,6 +446,9 @@ class KimiDeltaAttention:
             # Kimi-K3 explicitly uses two-link tiled P2P: SP4xTP2 affine-prefix wall time improved
             # from 1.683 to 0.991 ms (41.1%, 1.70x); the one-link SP4 control also failed PCC (0.778).
             p2p_num_links=self.p2p_num_links,
+            # Real-K3 component A/B: BF16 affine-summary storage retained PCC 0.999429/0.999545/0.999702
+            # for SP1xTP8/SP2xTP4/SP4xTP2, with <=0.687% median and <=0.858% 95% UCB latency cost.
+            affine_summary_dtype=self.affine_summary_dtype,
         )
         assert new_recurrent_state is not None
         if len(q.shape) == 4:

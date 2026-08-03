@@ -466,7 +466,8 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
     const std::optional<uint32_t>& sequence_parallel_axis,
     const std::optional<ttnn::Tensor>& affine_identity,
     const std::optional<ttnn::Tensor>& affine_zero,
-    uint32_t p2p_num_links) {
+    uint32_t p2p_num_links,
+    DataType affine_summary_dtype) {
     const auto& qs = q_in.logical_shape();
     const auto& vs = v_in.logical_shape();
     const auto& gs = g_in.logical_shape();
@@ -490,6 +491,9 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
         "sequence_parallel_axis, affine_identity, and affine_zero must be provided together");
     TT_FATAL(!distributed_prefix || *sequence_parallel_axis < 2, "sequence_parallel_axis must be 0 or 1");
     TT_FATAL(p2p_num_links > 0, "p2p_num_links must be positive");
+    TT_FATAL(
+        affine_summary_dtype == DataType::FLOAT32 || affine_summary_dtype == DataType::BFLOAT16,
+        "affine_summary_dtype must be FLOAT32 or BFLOAT16");
     TT_FATAL(chunk_size == 32, "chunk_kda currently requires chunk_size=32, got {}", chunk_size);
     TT_FATAL(
         k_in.logical_shape() == qs && qs[0] == B && qs[1] == T &&
@@ -663,8 +667,12 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> chunk_kda(
             true,
             eye_c,
             true);
-        auto summary_a = summaries[0];
-        auto summary_b = summaries[1];
+        auto summary_a = summaries[0].dtype() == affine_summary_dtype
+                             ? summaries[0]
+                             : ttnn::typecast(summaries[0], affine_summary_dtype, summary_mem);
+        auto summary_b = summaries[1].dtype() == affine_summary_dtype
+                             ? summaries[1]
+                             : ttnn::typecast(summaries[1], affine_summary_dtype, summary_mem);
         TT_FATAL(s0.has_value(), "group-prefix scan requires initial state");
         const auto prefix_mem = distributed_prefix ? out_mem : ttnn::L1_MEMORY_CONFIG;
         if (distributed_prefix) {

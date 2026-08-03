@@ -105,7 +105,8 @@ void bind_chunk_gated_delta_rule(nb::module_& mod) {
         nb::arg("sequence_parallel_axis") = nb::none(),
         nb::arg("affine_identity") = nb::none(),
         nb::arg("affine_zero") = nb::none(),
-        nb::arg("p2p_num_links") = 1);
+        nb::arg("p2p_num_links") = 1,
+        nb::arg("affine_summary_dtype") = ttnn::DataType::FLOAT32);
 
     ttnn::bind_function<"_kda_distributed_affine_prefix", "ttnn.transformer.">(
         mod,
