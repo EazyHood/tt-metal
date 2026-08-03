@@ -182,6 +182,7 @@ ttnn::device_operation::ProgramArtifacts PermuteDeviceOperation::MultiCoreTileIn
         kernels.push_back(KernelSpec{
             .unique_id = COMPUTE,
             .source = "ttnn/cpp/ttnn/operations/data_movement/transpose/device/kernels/compute/transpose_wh_metal2.cpp",
+            .compiler_options = {.opt_level = KernelBuildOptLevel::O3},
             .dfb_bindings =
                 {DFBBinding{
                      .dfb_spec_name = SRC0, .accessor_name = "cb_in", .endpoint_type = DFBEndpointType::CONSUMER},
@@ -483,6 +484,7 @@ ttnn::device_operation::ProgramArtifacts PermuteDeviceOperation::MultiCoreTileRo
         kernels.push_back(KernelSpec{
             .unique_id = COMPUTE,
             .source = "ttnn/cpp/ttnn/operations/data_movement/transpose/device/kernels/compute/transpose_wh_metal2.cpp",
+            .compiler_options = {.opt_level = KernelBuildOptLevel::O3},
             .dfb_bindings =
                 {DFBBinding{
                      .dfb_spec_name = SRC0, .accessor_name = "cb_in", .endpoint_type = DFBEndpointType::CONSUMER},
@@ -848,6 +850,7 @@ ttnn::device_operation::ProgramArtifacts PermuteDeviceOperation::MultiCoreTiledG
     KernelSpec compute{
         .unique_id = COMPUTE,
         .source = "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/compute/transpose_xw_tiled.cpp",
+        .compiler_options = {.opt_level = KernelBuildOptLevel::O3},
         .dfb_bindings =
             {DFBBinding{.dfb_spec_name = SRC_CB, .accessor_name = "cb_in", .endpoint_type = DFBEndpointType::CONSUMER},
              DFBBinding{

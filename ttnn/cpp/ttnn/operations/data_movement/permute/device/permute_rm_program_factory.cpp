@@ -319,6 +319,7 @@ ttnn::device_operation::ProgramArtifacts PermuteDeviceOperation::MultiCoreBlocke
         .source =
             "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/compute/"
             "transpose_xw_rm_single_tile_size.cpp",
+        .compiler_options = {.opt_level = KernelBuildOptLevel::O3},
         .dfb_bindings =
             {DFBBinding{.dfb_spec_name = SRC_CB, .accessor_name = "cb_in", .endpoint_type = DFBEndpointType::CONSUMER},
              // TILIZE_CB self-loop: produced (tilize) and consumed (transpose) by this kernel alone.
