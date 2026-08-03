@@ -31,7 +31,12 @@ Tensor reduce(
     bool use_row_major_support = false,
     // When false (default), fp32 mean runs on the accurate SFPU path (full fp32); true selects the FPU. Ignored for
     // non-fp32/non-AVG.
-    bool fast_and_approximate_mode = false);
+    bool fast_and_approximate_mode = false,
+    // Requested physical layout of the result. std::nullopt means "whatever the selected path emits
+    // naturally" — ROW_MAJOR on the dense RM paths, TILE on the tilized ones — i.e. the historical
+    // behavior. A request is honored natively when the chosen path can emit it (see reduce_op.cpp);
+    // otherwise the result comes back in the path's native layout and the caller converts.
+    const std::optional<tt::tt_metal::Layout>& output_layout = std::nullopt);
 
 }  // namespace ttnn::operations::reduction::generic::detail
 

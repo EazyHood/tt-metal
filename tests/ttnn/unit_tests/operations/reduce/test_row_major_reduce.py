@@ -684,10 +684,17 @@ def test_rm_reduce_interleaved_program_cache(device, reduce_op, shape, dim):
 # When H is tall and NC*Wt underfills the grid, the RM H-reduce splits the reduction axis into slices
 # (stage-1 partials in FP32) and combines them (stage-2). These shapes exercise that path (Ht_rm >= 16
 # triggers the split heuristic in reduce_op.cpp)
+#
+# output_layout also selects the *partial* layout, so it picks which stage pairing is under test:
+#   None / ROW_MAJOR -> ROW_MAJOR partials (one page per slice), stage 2 on the dense RM path
+#   TILE             -> TILE partials (slice s at tile row s), stage 2 on the classic tile reduce
 @pytest.mark.parametrize("reduce_op", ["mean", "sum"])
 @pytest.mark.parametrize("dtype", [ttnn.bfloat16, ttnn.float32])
 @pytest.mark.parametrize("keepdim", [False, True])
 @pytest.mark.parametrize("fast_and_approximate_mode", [False, True])
+@pytest.mark.parametrize(
+    "output_layout", [None, ttnn.ROW_MAJOR_LAYOUT, ttnn.TILE_LAYOUT], ids=["default", "rm", "tile"]
+)
 @pytest.mark.parametrize(
     "shape",
     [
@@ -699,7 +706,7 @@ def test_rm_reduce_interleaved_program_cache(device, reduce_op, shape, dim):
         (2, 3, 512, 40),  # NC>1 with tall H (Ht_rm=16)
     ],
 )
-def test_rm_reduce_h_axis_split(device, reduce_op, dtype, keepdim, fast_and_approximate_mode, shape):
+def test_rm_reduce_h_axis_split(device, reduce_op, dtype, keepdim, fast_and_approximate_mode, output_layout, shape):
     """H reduce on tall ROW_MAJOR input — exercises the multi-shard H-axis-split + combine path."""
     # fast_and_approximate_mode toggles the accurate SFPU (False) vs FPU (True) fp32 mean; only
     # ttnn.mean accepts it and it only affects fp32, so the True variant is meaningful only there.
@@ -718,10 +725,12 @@ def test_rm_reduce_h_axis_split(device, reduce_op, dtype, keepdim, fast_and_appr
     assert tt_input.layout == ttnn.ROW_MAJOR_LAYOUT
 
     ttnn_op = _OPS[reduce_op][1]
-    op_kwargs = {"dim": -2, "keepdim": keepdim}
+    op_kwargs = {"dim": -2, "keepdim": keepdim, "output_layout": output_layout}
     if reduce_op == "mean":
         op_kwargs["fast_and_approximate_mode"] = fast_and_approximate_mode
     tt_output = ttnn_op(tt_input, **op_kwargs)
+    # None keeps the dense RM path's natural ROW_MAJOR output.
+    assert tt_output.layout == (output_layout or ttnn.ROW_MAJOR_LAYOUT)
     output = ttnn.to_torch(tt_output)
 
     if dtype == ttnn.float32:
@@ -738,3 +747,101 @@ def test_rm_reduce_h_axis_split(device, reduce_op, dtype, keepdim, fast_and_appr
         check_ulp=False,
         check_frobenius=False,
     )
+
+
+# --- Explicit output_layout ------------------------------------------------------------------
+# sum/mean accept output_layout to override the layout the selected path emits naturally
+# (ROW_MAJOR for the dense RM paths, TILE otherwise). For a -2 reduce of a ROW_MAJOR input the
+# writer produces either layout directly; every other combination converts after reducing.
+@pytest.mark.parametrize("reduce_op", ["mean", "sum"])
+@pytest.mark.parametrize("dtype", [ttnn.bfloat16, ttnn.float32])
+@pytest.mark.parametrize("dim", [-1, -2])
+@pytest.mark.parametrize("keepdim", [False, True])
+@pytest.mark.parametrize(
+    "output_layout", [None, ttnn.ROW_MAJOR_LAYOUT, ttnn.TILE_LAYOUT], ids=["default", "rm", "tile"]
+)
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (1, 1, 64, 128),  # no H-axis split (Ht_rm=2)
+        (1, 1, 3136, 144),  # H-axis split active (Ht_rm=98, Wt=5), EfficientNetB0 global-pool
+        (1, 1, 3137, 145),  # split + unaligned H and W
+        (2, 3, 512, 40),  # NC>1
+    ],
+)
+def test_rm_reduce_output_layout(device, reduce_op, dtype, dim, keepdim, output_layout, shape):
+    """Requested output_layout is honored, with unchanged numerics."""
+    torch.manual_seed(0)
+    torch_input = torch.rand(shape, dtype=_torch_dtype(dtype))
+    torch_ref = _golden(torch_input, reduce_op, dim=dim, keepdim=keepdim)
+
+    tt_input = ttnn.from_torch(torch_input, dtype=dtype, layout=ttnn.ROW_MAJOR_LAYOUT, device=device)
+    assert tt_input.layout == ttnn.ROW_MAJOR_LAYOUT
+
+    tt_output = _OPS[reduce_op][1](tt_input, dim=dim, keepdim=keepdim, output_layout=output_layout)
+
+    expected_layout = ttnn.ROW_MAJOR_LAYOUT if output_layout is None else output_layout
+    assert tt_output.layout == expected_layout, f"expected {expected_layout}, got {tt_output.layout}"
+
+    if dtype == ttnn.float32:
+        pcc_threshold, rtol, atol, frobenius_threshold = 0.999, 0.002, 1e-3, 0.0015
+    else:
+        pcc_threshold, rtol, atol, frobenius_threshold = 0.97, 0.01, 0.02, 0.004
+    assert_numeric_metrics(
+        torch_ref,
+        ttnn.to_torch(tt_output),
+        pcc_threshold=pcc_threshold,
+        rtol=rtol,
+        atol=atol,
+        frobenius_threshold=frobenius_threshold,
+        check_ulp=False,
+        check_frobenius=False,
+    )
+
+
+# TILE output must leave the reduction identity (0) in the tile-padding rows, otherwise a downstream
+# tile op reads garbage. The H-axis split makes this load-bearing: stage-1 packs slice s at tile row
+# s of the partial and the rows past the last slice belong to no worker, so the final slice's core
+# fills them. An all-ones input turns any unfilled row into a visibly wrong mean.
+@pytest.mark.parametrize("dtype", [ttnn.bfloat16, ttnn.float32])
+@pytest.mark.parametrize(
+    "output_layout", [None, ttnn.ROW_MAJOR_LAYOUT, ttnn.TILE_LAYOUT], ids=["default", "rm", "tile"]
+)
+@pytest.mark.parametrize(
+    "shape",
+    [
+        (1, 1, 3136, 144),  # Wt=5  → ~12 slices (not a multiple of TILE_HEIGHT)
+        (1, 1, 4096, 32),  # Wt=1  → slices > TILE_HEIGHT, i.e. >1 output tile-row block
+        (1, 1, 784, 144),  # Ht_rm=25, fewer slices than H tiles
+        (2, 3, 1024, 96),  # NC>1
+    ],
+)
+def test_rm_reduce_h_split_tile_padding_is_identity(device, dtype, output_layout, shape):
+    """mean of an all-ones tensor is exactly 1.0 — no tile-padding row may contribute."""
+    torch_input = torch.ones(shape, dtype=_torch_dtype(dtype))
+    tt_input = ttnn.from_torch(torch_input, dtype=dtype, layout=ttnn.ROW_MAJOR_LAYOUT, device=device)
+
+    tt_output = ttnn.mean(tt_input, dim=-2, keepdim=True, output_layout=output_layout)
+    output = ttnn.to_torch(tt_output).float()
+
+    tolerance = 1e-5 if dtype == ttnn.float32 else 2e-2
+    max_error = (output - 1.0).abs().max().item()
+    assert max_error <= tolerance, f"max |mean - 1| = {max_error} exceeds {tolerance}"
+
+
+# Block-float formats only exist in TILE layout, so an untilize would have to widen the result to
+# BFLOAT16. sum/mean refuse the request instead of silently returning a different dtype.
+@pytest.mark.parametrize("reduce_op", ["mean", "sum"])
+@pytest.mark.parametrize("dim", [-1, -2])
+def test_rm_reduce_row_major_output_rejected_for_block_float(device, reduce_op, dim, expect_error):
+    torch_input = torch.rand((1, 1, 64, 128))
+    tt_input = ttnn.from_torch(torch_input, dtype=ttnn.bfloat8_b, layout=ttnn.TILE_LAYOUT, device=device)
+    ttnn_op = _OPS[reduce_op][1]
+
+    # TILE output is supported and keeps the dtype.
+    tt_output = ttnn_op(tt_input, dim=dim, output_layout=ttnn.TILE_LAYOUT)
+    assert tt_output.layout == ttnn.TILE_LAYOUT
+    assert tt_output.dtype == ttnn.bfloat8_b, "TILE output must not change the dtype"
+
+    with expect_error(RuntimeError, "block-float formats only exist in TILE layout"):
+        ttnn_op(tt_input, dim=dim, output_layout=ttnn.ROW_MAJOR_LAYOUT)

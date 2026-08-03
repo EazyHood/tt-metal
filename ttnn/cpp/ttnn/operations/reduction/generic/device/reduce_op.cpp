@@ -84,7 +84,18 @@ Tensor reduce(
     const std::optional<tt::tt_metal::CoreRangeSet>& sub_core_grids,
     bool negate,
     bool use_row_major_support,
-    bool fast_and_approximate_mode) {
+    bool fast_and_approximate_mode,
+    const std::optional<tt::tt_metal::Layout>& output_layout) {
+    // Same SUM/AVG-only restriction as the dense row-major path below: only ttnn::sum and ttnn::mean
+    // expose output_layout, and only they convert when the device path can't emit the request
+    // natively. Checked before the MIN branch, which returns through reduce_min without ever reading
+    // the request — accepting one for MAX/MIN would silently drop it rather than honor it.
+    TT_FATAL(
+        !output_layout.has_value() || reduce_math == tt::tt_metal::ReduceOpMath::SUM ||
+            reduce_math == tt::tt_metal::ReduceOpMath::AVG,
+        "output_layout is only supported for sum (SUM) and mean (AVG) reductions, got {}",
+        reduce_math);
+
     if (reduce_math == tt::tt_metal::ReduceOpMath::MIN) {
         return reduce_min(input_tensor, reduce_dim, scaler, output_mem_config, compute_kernel_config, sub_core_grids);
     }
@@ -141,9 +152,23 @@ Tensor reduce(
         (input_tensor.dtype() == tt::tt_metal::DataType::BFLOAT16 ||
          input_tensor.dtype() == tt::tt_metal::DataType::FLOAT32) &&
         (reduce_math == tt::tt_metal::ReduceOpMath::AVG || reduce_math == tt::tt_metal::ReduceOpMath::SUM);
-    const bool use_rm_dense_w = rm_base_eligible && reduce_dim == tt::tt_metal::ReduceOpDim::W;
+
+    // Did the caller explicitly ask for TILE? std::nullopt is not a TILE request even though the
+    // tilized paths return TILE anyway — it means "whatever the selected path emits naturally".
+    //
+    // The dense RM H path can emit either layout natively (its writer places each reduced row at the
+    // right tile row; see writer_reduce_rm_scalar.cpp), so it stays eligible either way. The dense RM
+    // W path can only emit ROW_MAJOR — its output tiles are shared by up to TILE_HEIGHT logical rows
+    // at 1-datum stride — so an explicit TILE request drops it back to tilize + tile-reduce, which
+    // produces TILE natively at no extra cost.
+    const bool explicit_tile_request = output_layout == tt::tt_metal::Layout::TILE;
+    const bool use_rm_dense_w =
+        rm_base_eligible && reduce_dim == tt::tt_metal::ReduceOpDim::W && !explicit_tile_request;
     const bool use_rm_dense_h = rm_base_eligible && reduce_dim == tt::tt_metal::ReduceOpDim::H;
     const bool use_rm_dense = use_rm_dense_w || use_rm_dense_h;
+    // Layout the dense RM path will be asked to produce; ROW_MAJOR unless TILE was requested.
+    const auto rm_dense_out_layout =
+        explicit_tile_request ? tt::tt_metal::Layout::TILE : tt::tt_metal::Layout::ROW_MAJOR;
 
     // High-level mean uses AVG with scaler (1/N). On the tiled path, GMPOOL AVG matches that intent. On the dense
     // row-major W/H path we tilize one logical row at a time from a narrow RM page; AVG applies an extra normalization
@@ -304,6 +329,12 @@ Tensor reduce(
         }
 
         if (num_h_slices >= 2) {
+            // The partials carry the final output's layout, which keeps both stages native and the
+            // whole split conversion-free. TILE partials pack slice s at tile row s of the (N, C,
+            // num_h_slices, W) result, with the trailing rows of the block filled with the identity,
+            // so stage 2 is the ordinary tile H-reduce. ROW_MAJOR partials give one page per slice
+            // and stage 2 stays on the dense RM path.
+            const bool tile_partials = rm_dense_out_layout == tt::tt_metal::Layout::TILE;
             const Tensor partials = ttnn::prim::reduce(
                 prepared_input,
                 tt::tt_metal::ReduceOpMath::SUM,
@@ -318,7 +349,8 @@ Tensor reduce(
                 /*row_major_w_dense_path=*/false,
                 /*row_major_h_dense_path=*/true,
                 /*use_sfpu_reduce=*/use_sfpu_fp32_reduce,
-                /*num_h_slices=*/num_h_slices);
+                /*num_h_slices=*/num_h_slices,
+                /*output_layout=*/rm_dense_out_layout);
 
             return ttnn::prim::reduce(
                 partials,
@@ -332,9 +364,10 @@ Tensor reduce(
                 /*negate=*/false,
                 /*post_mul_scaler=*/post_mul,
                 /*row_major_w_dense_path=*/false,
-                /*row_major_h_dense_path=*/true,
+                /*row_major_h_dense_path=*/!tile_partials,
                 /*use_sfpu_reduce=*/use_sfpu_fp32_reduce,
-                /*num_h_slices=*/1);
+                /*num_h_slices=*/1,
+                /*output_layout=*/rm_dense_out_layout);
         }
     }
 
@@ -351,7 +384,9 @@ Tensor reduce(
         /*post_mul_scaler=*/post_mul,
         /*row_major_w_dense_path=*/use_rm_dense_w,
         /*row_major_h_dense_path=*/use_rm_dense_h,
-        /*use_sfpu_reduce=*/use_sfpu_fp32_reduce);
+        /*use_sfpu_reduce=*/use_sfpu_fp32_reduce,
+        /*num_h_slices=*/1,
+        /*output_layout=*/use_rm_dense ? rm_dense_out_layout : tt::tt_metal::Layout::TILE);
 }
 
 }  // namespace ttnn::operations::reduction::generic::detail

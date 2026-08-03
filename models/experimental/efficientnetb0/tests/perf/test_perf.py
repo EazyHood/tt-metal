@@ -15,7 +15,9 @@ from models.common.utility_functions import (
 @pytest.mark.parametrize(
     "batch_size, expected_perf",
     [
-        [1, 227.0],
+        # Raised from 227.0: the global-pool reduce now emits TILE output directly instead of
+        # ROW_MAJOR + a tilize_with_val_padding pass over the result. Measured 241.25 samples/s.
+        [1, 241.0],
     ],
 )
 @pytest.mark.models_device_performance_bare_metal

@@ -140,10 +140,16 @@ std::vector<uint32_t> build_rm_reader_ct_args(
 
 // Build the writer compile-time args vector for the RM path (slots match
 // writer_reduce_rm_scalar.cpp). Returns scalar slots followed by TensorAccessorArgs(dst).
-// Unaffected by H-axis split: the writer derives the output page from global_tile_id / Wt, which
-// already equals nc*num_h_slices + slice under the split's (nc, slice, wt) work ordering.
+// The writer derives the flattened (nc, slice) index from global_tile_id / Wt, which already equals
+// nc*num_h_slices + slice under the H-axis split's (nc, slice, wt) work ordering. `tile_output`
+// selects TILE instead of ROW_MAJOR pages on the H path (out_tile_rows is derived from
+// `num_h_slices`); both are ignored on the W path, which only emits ROW_MAJOR.
 std::vector<uint32_t> build_rm_writer_ct_args(
-    const RmPlan& plan, const tt::tt_metal::MeshTensor& dst, tt::tt_metal::ReduceOpDim dim);
+    const RmPlan& plan,
+    const tt::tt_metal::MeshTensor& dst,
+    tt::tt_metal::ReduceOpDim dim,
+    bool tile_output = false,
+    uint32_t num_h_slices = 1);
 
 // Build the compute compile-time args vector for the RM path (slots match reduce_rm.cpp).
 // `Ht_arg` is the per-core ht count (W path) or the global Ht_rm (H path); the helper

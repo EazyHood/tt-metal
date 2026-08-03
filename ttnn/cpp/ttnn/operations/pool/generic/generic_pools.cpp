@@ -1123,7 +1123,13 @@ static std::vector<Tensor> pool2d(
         // ttnn::sum exposes a scalar parameter, but pool_sum is the only reduction entry point
         // that accepts (N, 1, H*W, C) tensors with H*W padding without producing garbage.
         // Replace once ttnn::sum gains equivalent handling.
-        Tensor output = ttnn::operations::reduction::pool_sum(canonical, 2, reduce_mem, compute_kernel_config, scalar);
+        //
+        // Ask the reduce for `output_layout` up front. On the dense row-major H path that costs
+        // nothing — the compute kernel already packs whole output tiles — whereas letting it return
+        // ROW_MAJOR and tilizing at the end (below) is an extra full pass over the result, which for
+        // narrow-channel shapes outweighs the input tilize the RM path saves.
+        Tensor output = ttnn::operations::reduction::pool_sum(
+            canonical, 2, reduce_mem, compute_kernel_config, scalar, output_layout);
         // pool_sum returns (N, 1, 1, C). For batch=1 this is (1, 1, 1, C), the avg_pool2d output
         // convention (1, 1, N*out_H*out_W, C) coincides. For batch>1 we reshape to (1, 1, N, C).
         const auto& output_padded_shape = output.padded_shape();

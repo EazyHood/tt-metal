@@ -81,8 +81,21 @@ void ReduceDeviceOperation::validate_on_program_cache_miss(
             path_name,
             static_cast<int>(tensor_args.memory_config().memory_layout()),
             static_cast<int>(operation_attributes.output_mem_config.memory_layout()));
+        // Only the H path can emit TILE. Its writer places each work unit's reduced row at tile row
+        // (slice % TILE_HEIGHT) of the destination tile — disjoint, face-aligned byte ranges, so the
+        // slices of one output tile may be spread across cores. The W path has no equivalent: its
+        // output tiles are shared by up to TILE_HEIGHT logical rows at a 1-datum stride, which is
+        // neither disjoint-friendly nor DRAM-alignable. See writer_reduce_rm_scalar.cpp.
+        TT_FATAL(
+            operation_attributes.output_layout == Layout::ROW_MAJOR || operation_attributes.row_major_h_dense_path,
+            "row_major_w_dense_path cannot emit TILE output: its output tiles are shared by up to "
+            "TILE_HEIGHT logical rows at 1-datum stride. Use the tilize + tile-reduce path instead.");
     } else {
         TT_FATAL((tensor_args.layout() == Layout::TILE), "Inputs to reduce must be tilized");
+        TT_FATAL(
+            operation_attributes.output_layout == Layout::TILE,
+            "Tilized reduce paths only emit TILE output, got {}",
+            operation_attributes.output_layout);
         // INT32 MIN/MAX/SUM is supported via the SFPU reduce path (format deduced from input CB in
         // compute_kernel_lib::reduce; MIN uses the dedicated reduce_{h,w}_neg kernels). MIN is lowered
         // to MAX + negate on the host, so only MAX and SUM appear here. See common.hpp.
@@ -194,17 +207,13 @@ ReduceDeviceOperation::spec_return_value_t ReduceDeviceOperation::compute_output
             break;
     }
 
-    const tt::tt_metal::Layout output_layout =
-        (operation_attributes.row_major_w_dense_path || operation_attributes.row_major_h_dense_path)
-            ? tt::tt_metal::Layout::ROW_MAJOR
-            : tt::tt_metal::Layout::TILE;
     return build_reduce_output_tensor_spec(
         output_shape,
         operation_attributes.output_dtype,
         operation_attributes.output_mem_config,
         tensor_args.memory_config(),
         operation_attributes.dim,
-        output_layout);
+        operation_attributes.output_layout);
 }
 
 ReduceDeviceOperation::tensor_return_value_t ReduceDeviceOperation::create_output_tensors(
@@ -226,7 +235,8 @@ ttnn::Tensor reduce(
     bool row_major_w_dense_path,
     bool row_major_h_dense_path,
     bool use_sfpu_reduce,
-    uint32_t num_h_slices) {
+    uint32_t num_h_slices,
+    tt::tt_metal::Layout output_layout) {
     return ttnn::device_operation::launch<ReduceDeviceOperation>(
         ReduceParams{
             reduce_math,
@@ -241,7 +251,8 @@ ttnn::Tensor reduce(
             row_major_w_dense_path,
             row_major_h_dense_path,
             use_sfpu_reduce,
-            num_h_slices},
+            num_h_slices,
+            output_layout},
         input_tensor);
 }
 

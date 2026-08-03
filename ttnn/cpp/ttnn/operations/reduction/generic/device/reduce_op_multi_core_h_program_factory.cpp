@@ -82,6 +82,14 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreHProgramFa
     // reader). Clamped to Ht_rm so slices are never empty. 1 = normal H-reduce (output H=1).
     const uint32_t num_h_slices = rm_path ? std::min(std::max(operation_attributes.num_h_slices, 1u), plan.Ht_rm) : 1;
     const uint32_t slice_Ht = rm_path ? tt::div_up(plan.Ht_rm, num_h_slices) : 0;
+    // compute_output_specs sizes the output's H from the unclamped attribute, and the TILE writer
+    // derives its page indices from the same slice count, so the clamp above must be a no-op. The
+    // host already bounds num_h_slices by Ht_rm (reduce_op.cpp); catch it here if that ever drifts.
+    TT_FATAL(
+        !rm_path || operation_attributes.num_h_slices <= plan.Ht_rm,
+        "Reduce H (dense RM): num_h_slices {} exceeds Ht_rm {}; the output spec and the kernels would disagree",
+        operation_attributes.num_h_slices,
+        plan.Ht_rm);
 
     uint32_t chunk_size = use_width_sharding ? 1 : ttnn::get_dest_reg_count(operation_attributes.compute_kernel_config);
 
@@ -428,7 +436,10 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceMultiCoreHProgramFa
     writer_desc.config = WriterConfigDescriptor{};
 
     if (rm_path) {
-        std::vector<uint32_t> writer_compile_time_args = build_rm_writer_ct_args(plan, output, ReduceOpDim::H);
+        // TILE output re-lands each work unit's reduced row at tile row (slice % TILE_HEIGHT) of its
+        // destination tile; ROW_MAJOR writes it to the (nc, slice) page. Both are the same writer.
+        std::vector<uint32_t> writer_compile_time_args = build_rm_writer_ct_args(
+            plan, output, ReduceOpDim::H, operation_attributes.output_layout == Layout::TILE, num_h_slices);
 
         writer_desc.kernel_source =
             "ttnn/cpp/ttnn/operations/reduction/generic/device/kernels/dataflow/"
