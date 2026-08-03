@@ -144,8 +144,16 @@ void JitBuildEnv::init(
 
     // Flags
     string common_flags =
-        "-std=c++17 -ftt-nttp -ftt-constinit -ftt-consteval -ftt-no-dyninit "
-        "-flto=auto -ffast-math "
+        // Use C++17, plus some specic C++20 features we've enabled
+        "-std=c++17 -ftt-nttp -ftt-constinit -ftt-consteval "
+        // Ban dynamic initializations, via a check we've added
+        "-ftt-no-dyninit "
+        "-flto=auto "
+        // Fast math allows non-IEEE compliant optimizations ...
+        "-ffast-math "
+        // ... but we require these IEEE behaviours
+        "-fno-finite-math-only -fsigned-zeros -fno-associative-math "
+        // No exceptions or rtti emission, and no using cxa-atexit for cleanups
         "-fno-exceptions -fno-rtti -fno-use-cxa-atexit ";
 
     if (rtoptions.get_jit_analytics_enabled()) {
