@@ -948,6 +948,40 @@ std::vector<Tensor> tanhshrink_bw(
     return grad_tensor;
 }
 
+# atanh_bw: NaN for a zero incoming gradient — change set
+
+Base: `tenstorrent/tt-metal` @ `587a4f30937e8bd5eea684434ef985d32486fb55` (main, 2026-08-06 14:24 UTC).
+Verified identical at `EazyHood/tt-metal` @ `62a086c5` for both files touched.
+
+Branch name to use: `fix/atanh-bw-zero-grad`
+PR title: `[Bug fix] fix(eltwise): atanh_bw returns NaN for a zero incoming gradient`
+
+---
+
+## (a) Files and exact lines to touch
+
+| # | File | Lines | Required? |
+|---|------|-------|-----------|
+| 1 | `ttnn/cpp/ttnn/operations/eltwise/unary_backward/unary_backward.cpp` | 951-990 (function `atanh_bw`); the defect is on **966** | yes |
+| 2 | `tests/ttnn/nightly/unit_tests/operations/eltwise/backward/test_backward_atanh.py` | import on line 8, plus a new test function | yes |
+
+Nothing else. No header change is needed: `<tt-metalium/hal.hpp>` is already included at
+`unary_backward.cpp:32`, and `acosh_bw` at line 580-581 already calls `tt::tt_metal::hal::get_nan()`
+and `get_inf()` from this same translation unit.
+
+Do **not** touch `ttnn/ttnn/operations/unary_backward.py`. The registered golden
+(lines 85-90, `torch.atanh` through autograd) is correct and is the thing this PR makes the
+kernel agree with.
+
+---
+
+## (b) Old code and new code, literal
+
+### 1. `ttnn/cpp/ttnn/operations/eltwise/unary_backward/unary_backward.cpp`
+
+**OLD — lines 951-990 exactly as they are on main today:**
+
+```cpp
 std::vector<Tensor> atanh_bw(
     const Tensor& grad, const Tensor& input, const std::optional<MemoryConfig>& output_mem_config) {
     std::vector<Tensor> grad_tensor;
@@ -988,6 +1022,338 @@ std::vector<Tensor> atanh_bw(
     grad_tensor.emplace_back(grad_a);
     return grad_tensor;
 }
+```
+
+**NEW — replace the whole function with this:**
+
+```cpp
+std::vector<Tensor> atanh_bw(
+    const Tensor& grad, const Tensor& input, const std::optional<MemoryConfig>& output_mem_config) {
+    std::vector<Tensor> grad_tensor;
+    float t_nan = tt::tt_metal::hal::get_nan();
+    float t_inf = tt::tt_metal::hal::get_inf();
+    using ttnn::operations::unary::EltwiseUnaryWithParam;
+    using ttnn::operations::unary::UnaryOpType;
+    std::vector<EltwiseUnaryWithParam> ops_chain = {
+        EltwiseUnaryWithParam{UnaryOpType::SQUARE},
+        EltwiseUnaryWithParam{UnaryOpType::SUB_UNARY_SFPU, 1.0f},
+        EltwiseUnaryWithParam{UnaryOpType::NEG},
+        EltwiseUnaryWithParam{UnaryOpType::RECIP}};
+
+    // |input| == 1 is the only singular point of d/dx atanh(x) = 1 / (1 - x^2).
+    Tensor at_singularity = ttnn::logical_or(
+        ttnn::eq(input, 1, std::nullopt, output_mem_config),
+        ttnn::eq(input, -1, std::nullopt, output_mem_config),
+        std::nullopt,
+        output_mem_config);
+
+    Tensor grad_a =
+        ttnn::multiply(grad, unary_chain(input, ops_chain, output_mem_config), std::nullopt, output_mem_config);
+    // A zero incoming gradient is 0 * finite = 0 everywhere the local derivative is finite;
+    // only at the singularity is it 0 * inf, which is NaN.
+    grad_a = where(
+        ttnn::logical_and(ttnn::eqz(grad, output_mem_config), at_singularity, std::nullopt, output_mem_config),
+        t_nan,
+        grad_a,
+        output_mem_config);
+    grad_a = where(
+        ttnn::logical_and(at_singularity, ttnn::nez(grad, output_mem_config)), t_inf, grad_a, output_mem_config);
+    grad_a = where(
+        ttnn::logical_and(ttnn::eq(grad_a, t_inf, std::nullopt, output_mem_config), ttnn::ltz(grad, output_mem_config)),
+        -t_inf,
+        grad_a,
+        output_mem_config);
+    grad_tensor.emplace_back(grad_a);
+    return grad_tensor;
+}
+```
+
+What changed, in words:
+
+1. The unconditional `where(eqz(grad), t_nan, ...)` on line 966 now also requires `|input| == 1`.
+2. The rescue block on lines 967-971 (`eqz(grad) && eqz(input) -> 0.f`) is **deleted**: it becomes
+   dead code, because with the corrected condition `input == 0, grad == 0` already falls through to
+   `grad_a = 0 * 1 = 0`. Its behaviour is preserved exactly (see the case table in (c)).
+3. The `logical_or(eq(input, 1), eq(input, -1))` predicate that the function already built inline is
+   hoisted into `at_singularity` and reused, so it is computed once instead of being recomputed.
+4. `std::nanf("")` / `std::numeric_limits<float>::infinity()` become `hal::get_nan()` / `hal::get_inf()`,
+   which is what `acosh_bw` in the same file already uses (lines 580-581).
+
+Net device-op count goes **down**: two `eqz` and one `where` removed, one `logical_and` added.
+
+If a reviewer wants the diff even smaller, changes 3 and 4 can be dropped independently and the fix
+still stands on change 1 + 2 alone.
+
+### 2. `tests/ttnn/nightly/unit_tests/operations/eltwise/backward/test_backward_atanh.py`
+
+**OLD — line 8:**
+
+```python
+from tests.ttnn.nightly.unit_tests.operations.eltwise.backward.utility_funcs import data_gen_with_range, compare_pcc
+```
+
+**NEW — line 8 (same shape as `test_backward_acosh.py:8-12`):**
+
+```python
+from tests.ttnn.nightly.unit_tests.operations.eltwise.backward.utility_funcs import (
+    data_gen_with_range,
+    compare_pcc,
+    compare_results,
+)
+```
+
+**NEW — insert this function after the import block, before `test_bw_atanh`:**
+
+```python
+# A zero incoming gradient must produce a zero outgoing gradient wherever the local
+# derivative d/dx atanh(x) = 1 / (1 - x^2) is finite, i.e. everywhere except |x| == 1.
+@pytest.mark.parametrize(
+    "in_val, grad_val",
+    [
+        (0.5, 0.0),
+        (-0.5, 0.0),
+        (0.99, 0.0),
+        (2.0, 0.0),
+        (0.0, 0.0),
+        (0.5, 1.0),
+    ],
+)
+def test_bw_atanh_zero_grad(in_val, grad_val, device):
+    in_data = (torch.ones(torch.Size([1, 1, 32, 32]), requires_grad=True) * in_val).bfloat16()
+    input_tensor = ttnn.Tensor(in_data, ttnn.bfloat16).to(ttnn.TILE_LAYOUT).to(device)
+    grad_data = (torch.ones(torch.Size([1, 1, 32, 32]), requires_grad=False) * grad_val).bfloat16()
+    grad_tensor = ttnn.Tensor(grad_data, ttnn.bfloat16).to(ttnn.TILE_LAYOUT).to(device)
+
+    tt_output_tensor_on_device = ttnn.atanh_bw(grad_tensor, input_tensor)
+
+    golden_function = ttnn.get_golden_function(ttnn.atanh_bw)
+    golden_tensor = golden_function(grad_data, in_data)
+
+    comp_pass = compare_results(tt_output_tensor_on_device, golden_tensor)
+    assert comp_pass
+```
+
+The existing `test_bw_atanh` is left untouched.
+
+---
+
+## (c) The test: why the existing ones cannot see this, and what the new one does
+
+### Three tests exercise `atanh_bw` today. None of them can reach the bug.
+
+**1. `tests/ttnn/nightly/unit_tests/operations/eltwise/backward/test_backward_atanh.py:19-29`**
+
+```python
+in_data, input_tensor = data_gen_with_range(input_shapes, -100, 100, device, required_grad=True)
+grad_data, grad_tensor = data_gen_with_range(input_shapes, -100, 100, device)
+```
+
+`data_gen_with_range` calls `torch.manual_seed(seed)` on **every** invocation with
+`seed=DEFAULT_SEED=213919` (`utility_funcs.py:53-55, 13`), so the two calls return the **same
+tensor**: `torch.equal(in_data, grad_data)` is `True`. Every element whose gradient is exactly zero
+therefore also has input exactly zero — the one case the old rescue on lines 967-971 covers. Of the
+1,081 exact zeros the test generates, 0 have a non-zero input. The test cannot trip the bug.
+
+Even with the seeds decoupled it would still pass: `get_pcc`
+(`ttnn/tt_lib/_internal/comparison_funcs.py:41-55`) zeroes NaN and Inf in **both** tensors before
+correlating, so 1,098 NaN-vs-finite mismatches still score PCC = 0.9999975 against a 0.99 threshold.
+That is why this PR does **not** try to fix the test by changing the seed — it would not turn red,
+and it would newly exercise `|x|` up to 100 for reasons unrelated to this change.
+
+**2. `tests/ttnn/nightly/unit_tests/operations/eltwise/test_backward.py:47-52` (`test_atanh`)**
+parametrizes `in_val` over `[-1, 0, 1]` with `grad_val=1`. The gradient is never zero.
+
+**3. `tests/ttnn/nightly/unit_tests/operations/eltwise/test_backward.py:55-61` (`test_atanh_nan`)**
+does parametrize `grad_val=0`, but only over `in_val` in `[-1, 0, 1]` — the three inputs that happen
+to be handled correctly. It is also `@pytest.mark.skipif(is_wormhole_b0() or is_blackhole())`, so it
+does not run on current hardware at all.
+
+**4.** There is no `atanh_bw` entry in `tests/sweep_framework/` (`atan_bw`, `acosh_bw`, `acos_bw`,
+`i0_bw` and ~60 others are there). Confirmed against the full repository tree at `587a4f30`.
+
+### What the new test covers
+
+| in_val | grad_val | golden | before the fix | after the fix | role |
+|---|---|---|---|---|---|
+| 0.5  | 0.0 | 0.0  | **NaN** | 0.0  | red -> green |
+| -0.5 | 0.0 | 0.0  | **NaN** | 0.0  | red -> green |
+| 0.99 | 0.0 | 0.0  | **NaN** | 0.0  | red -> green, near the singularity |
+| 2.0  | 0.0 | -0.0 | **NaN** | -0.0 | red -> green, outside the atanh domain |
+| 0.0  | 0.0 | 0.0  | 0.0     | 0.0  | guards the rescue block being deleted |
+| 0.5  | 1.0 | 1.336| 1.336   | 1.336| guards the ordinary path |
+
+`compare_results` is the right comparator here and it is the one `test_bw_acosh_edge_cases`
+(`test_backward_acosh.py:16-37`) already uses for exactly this kind of constant-tensor edge case.
+For a constant tensor `get_pcc` short-circuits: golden all-finite vs calculated all-NaN hits
+*"One tensor is all nan, the other is not"* and returns 0.0, and `comp_allclose` also returns False,
+so `comp_pass | comp_all` is False and the assert fires. `compare_pcc` on non-constant tensors would
+not fire, which is the whole reason this bug survived.
+
+### The fix does not change any case the existing tests do cover
+
+All nine `(in_val, grad_val)` combinations of `test_atanh_nan`, emulated line by line:
+
+```
+in=-1.0 grad=-1.0  before=-inf  after=-inf   identical
+in=-1.0 grad= 0.0  before= nan  after= nan   identical
+in=-1.0 grad= 1.0  before= inf  after= inf   identical
+in= 0.0 grad=-1.0  before=-1.0  after=-1.0   identical
+in= 0.0 grad= 0.0  before= 0.0  after= 0.0   identical
+in= 0.0 grad= 1.0  before= 1.0  after= 1.0   identical
+in= 1.0 grad=-1.0  before=-inf  after=-inf   identical
+in= 1.0 grad= 0.0  before= nan  after= nan   identical
+in= 1.0 grad= 1.0  before= inf  after= inf   identical
+```
+
+---
+
+## (d) PR body, ready to paste
+
+### What is wrong
+
+`atanh_bw` writes NaN into every element whose incoming gradient is exactly `0`, regardless of the
+input. `unary_backward.cpp:966`:
+
+```cpp
+Tensor grad_a =
+    ttnn::multiply(grad, unary_chain(input, ops_chain, output_mem_config), std::nullopt, output_mem_config);
+grad_a = where(ttnn::eqz(grad, output_mem_config), t_nan, grad_a, output_mem_config);   // <-- unconditional
+grad_a = where(
+    ttnn::logical_and(ttnn::eqz(grad, output_mem_config), ttnn::eqz(input, output_mem_config)),
+    0.f,
+    grad_a,
+    output_mem_config);
+```
+
+The rescue on the next lines only takes back the case `input == 0`. Every other input keeps the NaN:
+
+```
+ttnn.atanh_bw(grad=0.0, input=0.5)   -> nan      golden  0.0
+ttnn.atanh_bw(grad=0.0, input=-0.5)  -> nan      golden  0.0
+ttnn.atanh_bw(grad=0.0, input=0.99)  -> nan      golden  0.0
+ttnn.atanh_bw(grad=0.0, input=2.0)   -> nan      golden -0.0
+ttnn.atanh_bw(grad=0.0, input=0.0)   -> 0.0      golden  0.0     (rescued)
+ttnn.atanh_bw(grad=0.0, input=1.0)   -> nan      golden  nan     (correct: 0/0)
+```
+
+The invariant broken is `0 * finite = 0`. The local derivative `d/dx atanh(x) = 1 / (1 - x^2)` is
+finite everywhere except `|x| = 1`, so a zero incoming gradient must come out zero everywhere else.
+The registered golden (`ttnn/ttnn/operations/unary_backward.py:85-90`, `torch.atanh` through
+autograd) agrees: it returns `0.0` for `|x| < 1`, `-0.0` for `|x| > 1`, and NaN only at `|x| = 1`.
+
+### How wide it is
+
+Sweeping the input over **every finite bfloat16 pattern** with `grad = 0.0`:
+
+```
+finite bf16 input patterns          65,280
+NaN returned where golden is finite 65,276   (99.99%)
+inputs handled correctly            -1.0, 0.0, 1.0     (three of them)
+restricted to the atanh domain |x|<1   32,512 patterns, 32,510 wrong
+```
+
+Controls, so the measurement is not one-sided: the identical sweep with `grad = 1.0` gives **0**
+mismatches out of 65,280 — the comparator is not simply flagging everything. Sweeping the *gradient*
+at a fixed `x = 0.5` over all 65,280 finite bf16 patterns gives exactly **2** NaN, and they are
+`+0.0` and `-0.0`; the trigger is precisely `grad == 0`, not a precision problem.
+
+On a realistic tensor — shape `(1, 3, 320, 384)`, inputs uniform in `(-0.8, 0.8)`, gradient with 10%
+exact zeros — 36,883 of 368,640 elements (10.01%) come back NaN, and the sum of the returned
+gradient is `nan` where the golden sum is `-110.79`. Second control: replacing those zeros with
+`1e-4` gives 0 NaN out of 368,640.
+
+Zero gradients are not exotic. They are what a padding mask, a dropout mask, a dead ReLU branch or a
+`.grad` accumulated over an unused slice produce. A single NaN propagates through the optimizer into
+every parameter it touches, so the failure is one wrecked training step, not a rounding difference.
+
+### The correct form is already in this file, twice
+
+`acosh_bw` (line 573) has the same singularity and conditions the NaN on it
+(`unary_backward.cpp:586-596`):
+
+```cpp
+grad_a = ttnn::where(
+    ttnn::logical_or(
+        ttnn::lt(in_sq, 1.0f, std::nullopt, output_mem_config),
+        ttnn::logical_and(
+            ttnn::eq(input, 1.0f, std::nullopt, output_mem_config),
+            ttnn::eqz(grad, output_mem_config),
+            ...
+```
+
+`log_bw` (line 829) does the same, nesting the zero-gradient test *inside* the singular case
+(`unary_backward.cpp:833-843`):
+
+```cpp
+where(ttnn::eqz(input, output_mem_config),
+      where(ttnn::eqz(grad, output_mem_config), std::nanf(""), ...),
+      grad_a, ...)
+```
+
+And `atanh_bw` itself already knows where its singularity is — it builds
+`logical_or(eq(input, 1), eq(input, -1))` twenty lines further down, for the `±inf` case. It simply
+was not used for the zero-gradient branch.
+
+### What this changes
+
+`where(eqz(grad), nan, ...)` becomes `where(eqz(grad) && |input| == 1, nan, ...)`, reusing the
+singularity predicate the function already builds; the `eqz(grad) && eqz(input) -> 0.f` rescue is
+then dead and is removed. `std::nanf("")` and `std::numeric_limits<float>::infinity()` become
+`hal::get_nan()` / `hal::get_inf()`, matching `acosh_bw` at lines 580-581 in this same file
+(`<tt-metalium/hal.hpp>` is already included at line 32).
+
+Net device-op count goes down by two `eqz` and one `where`.
+
+After the change, the full 65,280-pattern sweep at `grad = 0.0` gives **0** mismatches against the
+golden, and all nine `(in_val, grad_val)` combinations of the existing `test_atanh_nan` are
+bit-identical to before.
+
+### Why no test caught it
+
+- `test_backward_atanh.py:20-21` calls `data_gen_with_range` twice, and that helper does
+  `torch.manual_seed(DEFAULT_SEED)` on every call (`utility_funcs.py:53-55`), so `in_data` and
+  `grad_data` come out **bit-identical** — `torch.equal` is `True`. Every one of the 1,081 exact
+  zeros in the gradient therefore has input `0` too, i.e. every one lands in the single case the old
+  rescue covers.
+- Decoupling the seeds would not turn it red either: with an independent gradient there are 1,098
+  NaN-vs-finite mismatches, but `get_pcc` (`ttnn/tt_lib/_internal/comparison_funcs.py:41-55`) sets
+  NaN and Inf to zero in **both** tensors before correlating, giving PCC = 0.9999975 against the
+  0.99 threshold. This blind spot applies to every backward op compared with `compare_pcc`, not just
+  this one.
+- `test_backward.py:51` (`test_atanh`) uses `grad_val=1` only. `test_backward.py:60`
+  (`test_atanh_nan`) does use `grad_val=0`, but only with `in_val` in `[-1, 0, 1]` — exactly the
+  three inputs that are already correct — and it is skipped on Wormhole and Blackhole.
+- There is no `atanh_bw` sweep in `tests/sweep_framework/`, although `atan_bw` and `acosh_bw` have one.
+
+The new test is modelled on `test_bw_acosh_edge_cases` (`test_backward_acosh.py:16-37`), which was
+added for the same class of problem in #6583: constant tensors, explicit `(in_val, grad_val)` pairs,
+and `compare_results` instead of `compare_pcc`, because on a constant tensor `get_pcc` short-circuits
+on all-NaN and actually reports the failure.
+
+### How this was measured
+
+No Tenstorrent hardware was used. The analysis is from the source, and the numbers come from
+reimplementing `unary_backward.cpp:951-990` line by line in float32 with bfloat16 inputs and outputs
+and comparing against the registered golden (`torch.atanh` through autograd, torch 2.13.0+cpu).
+Both the current code and the proposed code were emulated, which is where the "0 mismatches after"
+figure comes from. The `where`/`eqz`/`logical_or` semantics were read from
+`ttnn/cpp/ttnn/operations/eltwise/ternary/ternary.hpp` — `ttnn::where(predicate, scalar, tensor)` is
+a real select, so the NaN is written, not folded away. The on-device numbers should match, since the
+op is a host-side composite with no dtype or architecture branch, but CI is the first real
+compilation and the first real run.
+
+### Notes for reviewers
+
+- The behaviour at `|input| = 1` is deliberately unchanged: `grad == 0` there is `0/0` and torch
+  returns NaN too, so the NaN is kept.
+- The removal of the `eqz(grad) && eqz(input) -> 0.f` block is not a behaviour change; `input == 0`
+  now reaches `0 * 1 = 0` through the normal path. The new test carries `(0.0, 0.0)` as the guard.
+- The `hal::get_nan()` / `hal::get_inf()` swap is a separate one-line cleanup that matches
+  `acosh_bw` above; happy to drop it if you would rather keep the diff to the condition alone.
+- `test_backward_atanh.py`'s seed collision is described above but **not** changed here, because
+  fixing it does not make the test fail and it would newly exercise `|x|` up to 100 for reasons
+  unrelated to this PR. Worth its own issue if you want it.
+
 
 // Asin
 // result: grad * (-self * self + 1).rsqrt()
