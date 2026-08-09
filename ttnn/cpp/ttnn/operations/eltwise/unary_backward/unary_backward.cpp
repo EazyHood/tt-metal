@@ -479,7 +479,6 @@ std::vector<std::optional<ttnn::Tensor>> rsqrt_bw(
     if (!input_grad.has_value()) {
         input_grad = ttnn::empty_like(grad);
     }
-    float t_inf = std::numeric_limits<float>::infinity();
     float t_nan = std::nanf("");
 
     ttnn::rsqrt(input, false, output_mem_config, input_grad);
@@ -490,7 +489,10 @@ std::vector<std::optional<ttnn::Tensor>> rsqrt_bw(
         std::nullopt,
         output_mem_config,
         input_grad);
-    where(ttnn::eqz(input, output_mem_config), t_inf, input_grad.value(), output_mem_config, input_grad);
+    // input == 0 is deliberately not special-cased. rsqrt(0) is +inf, power_iterative cubes it, and
+    // the -0.5 * grad * input^(-3/2) chain above therefore already produces the correctly signed
+    // infinity: -inf for grad > 0, +inf for grad < 0. Forcing a positive infinity here got the sign
+    // wrong for every positive gradient. grad == 0 is still resolved to NaN below.
     where(ttnn::ltz(input, output_mem_config), t_nan, input_grad.value(), output_mem_config, input_grad);
     where(
         ttnn::logical_and(
