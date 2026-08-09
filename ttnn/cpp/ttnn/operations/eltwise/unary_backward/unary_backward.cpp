@@ -490,7 +490,20 @@ std::vector<std::optional<ttnn::Tensor>> rsqrt_bw(
         std::nullopt,
         output_mem_config,
         input_grad);
-    where(ttnn::eqz(input, output_mem_config), t_inf, input_grad.value(), output_mem_config, input_grad);
+    where(
+        ttnn::logical_and(
+            ttnn::eqz(input, output_mem_config), ttnn::gtz(grad, output_mem_config), std::nullopt, output_mem_config),
+        -t_inf,
+        input_grad.value(),
+        output_mem_config,
+        input_grad);
+    where(
+        ttnn::logical_and(
+            ttnn::eqz(input, output_mem_config), ttnn::ltz(grad, output_mem_config), std::nullopt, output_mem_config),
+        t_inf,
+        input_grad.value(),
+        output_mem_config,
+        input_grad);
     where(ttnn::ltz(input, output_mem_config), t_nan, input_grad.value(), output_mem_config, input_grad);
     where(
         ttnn::logical_and(
