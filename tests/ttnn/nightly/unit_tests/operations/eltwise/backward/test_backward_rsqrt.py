@@ -59,6 +59,13 @@ def test_bw_rsqrt_opt_output(input_shapes, device):
     assert comp_pass
 
 
+@pytest.mark.parametrize(
+    "input_shapes",
+    (
+        (torch.Size([1, 1, 32, 32])),
+        (torch.Size([1, 1, 320, 384])),
+    ),
+)
 @pytest.mark.parametrize("grad_value", [2.0, -2.0, 0.0])
 def test_bw_rsqrt_at_zero(input_shapes, device, grad_value):
     # input == 0 is the one point the two tests above cannot reach: they draw continuous random
