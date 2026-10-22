@@ -70,6 +70,7 @@ struct NdToLegacyShardingParams {
     Shape shard_shape_nd;
     Layout layout = Layout::TILE;
     CoreCoord grid_size;
+    ShardOrientation orientation = ShardOrientation::ROW_MAJOR;
     ShardDistributionStrategy shard_distribution_strategy = ShardDistributionStrategy::ROUND_ROBIN_1D;
 
     TensorMemoryLayout memory_layout = TensorMemoryLayout::BLOCK_SHARDED;
@@ -134,8 +135,7 @@ TEST_P(NdToLegacyShardingTests, NdToLegacySharding) {
     const auto& params = GetParam();
 
     CoreRangeSet cores(CoreRange(CoreCoord{0, 0}, CoreCoord{params.grid_size.x - 1, params.grid_size.y - 1}));
-    NdShardSpec nd_shard_spec{
-        params.shard_shape_nd, cores, ShardOrientation::ROW_MAJOR, params.shard_distribution_strategy};
+    NdShardSpec nd_shard_spec{params.shard_shape_nd, cores, params.orientation, params.shard_distribution_strategy};
     MemoryConfig memory_config{BufferType::L1, nd_shard_spec};
     TensorLayout tensor_layout(DataType::UINT16, PageConfig(params.layout), memory_config);
     TensorSpec tensor_spec(params.shape, tensor_layout);
@@ -421,6 +421,38 @@ INSTANTIATE_TEST_SUITE_P(
             .shard_distribution_strategy = ShardDistributionStrategy::CONTIGUOUS_1D,
             .memory_layout = TensorMemoryLayout::ND_SHARDED,
             .shard_shape_2d = std::nullopt,
+        },
+        // COL_MAJOR versions of the first three cases, with the grid transposed. Legacy COL_MAJOR block sharding puts
+        // shard (row i, column j) on core (x = i, y = j), and COL_MAJOR round-robin walks the cores y first, so the
+        // two placements only match when the 2 shards along the tensor width fill the grid height.
+        NdToLegacyShardingParams{
+            .shape = Shape({2, 32 * 2, 32 * 2}),
+            .shard_shape_nd = Shape({1, 32, 32}),
+            .layout = Layout::TILE,
+            .grid_size = CoreCoord{4, 2},
+            .orientation = ShardOrientation::COL_MAJOR,
+            .memory_layout = TensorMemoryLayout::BLOCK_SHARDED,
+            .shard_shape_2d = Shape2D{32, 32},
+        },
+        // Grid height 3 is not filled: shard (row 1, column 0) lands on core (x = 0, y = 2). Can't convert.
+        NdToLegacyShardingParams{
+            .shape = Shape({2, 32 * 2, 32 * 2}),
+            .shard_shape_nd = Shape({1, 32, 32}),
+            .layout = Layout::TILE,
+            .grid_size = CoreCoord{4, 3},
+            .orientation = ShardOrientation::COL_MAJOR,
+            .memory_layout = TensorMemoryLayout::ND_SHARDED,
+            .shard_shape_2d = std::nullopt,
+        },
+        // Grid width 5: the spare column of cores is never used, so the placement still matches. Converts.
+        NdToLegacyShardingParams{
+            .shape = Shape({2, 32 * 2, 32 * 2}),
+            .shard_shape_nd = Shape({1, 32, 32}),
+            .layout = Layout::TILE,
+            .grid_size = CoreCoord{5, 2},
+            .orientation = ShardOrientation::COL_MAJOR,
+            .memory_layout = TensorMemoryLayout::BLOCK_SHARDED,
+            .shard_shape_2d = Shape2D{32, 32},
         },
         NdToLegacyShardingParams{
             .shape = Shape({2, 2, 4}),

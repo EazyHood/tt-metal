@@ -410,12 +410,19 @@ std::optional<MemoryConfig> TensorSpec::populate_legacy_shard_spec_from_nd() con
         return std::nullopt;
     }
 
-    // If 1D distribution is used, we need the number of shards along width to match the grid width to guarantee the
-    // same distribution of shards
+    // If 1D distribution is used, the 1D core order must step through the shard grid the way the 2D block mapping
+    // does. Shards are numbered row-major over the shard grid in both orientations, so the number of shards along the
+    // tensor width must equal the grid extent along the orientation's fast axis: x for ROW_MAJOR, y for COL_MAJOR.
+    // (num_shards_along_width/height were swapped above for COL_MAJOR, so the tensor-width count is in
+    // num_shards_along_height there.)
     CoreCoord shard_grid = shard_spec.grid.ranges()[0].grid_size();
-    if (nd_shard_spec.shard_distribution_strategy == ShardDistributionStrategy::ROUND_ROBIN_1D &&
-        num_shards_along_width != shard_grid.x) {
-        return std::nullopt;
+    if (nd_shard_spec.shard_distribution_strategy == ShardDistributionStrategy::ROUND_ROBIN_1D) {
+        const bool row_major = shard_spec.orientation == ShardOrientation::ROW_MAJOR;
+        const size_t shards_along_tensor_width = row_major ? num_shards_along_width : num_shards_along_height;
+        const size_t grid_fast_axis_extent = row_major ? shard_grid.x : shard_grid.y;
+        if (shards_along_tensor_width != grid_fast_axis_extent) {
+            return std::nullopt;
+        }
     }
 
     // To match the shard distribution, the number of shards along width and height must fit into the grid
