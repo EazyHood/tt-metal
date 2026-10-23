@@ -41,7 +41,7 @@ build() {  # $1 = tree, $2 = label
 
 medir() {  # $1 = tree, $2 = label
   cd $1 || return 1
-  export TT_METAL_HOME=$1
+  export TT_METAL_HOME=$1 PYTHONPATH=$1
   source $1/python_env/bin/activate
   mkdir -p $1/c4_medidas && cp $W/gdn_silicio.py $1/c4_medidas/
   echo "== $2: medida $(date -u)"
