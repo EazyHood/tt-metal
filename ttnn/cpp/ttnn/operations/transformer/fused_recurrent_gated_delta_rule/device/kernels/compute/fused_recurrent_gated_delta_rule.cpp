@@ -18,16 +18,17 @@
 //
 // Precision: the carried state never goes through srcA/srcB, which keep 19 bits of an fp32
 // operand. The state CBs (S, s2, s3, sd), decay and beta are unpacked straight to the fp32 Dest
-// (UnpackToDestFp32, set in the program factory) and the decay is an SFPU fp32 multiply. A
-// truncation there would compound every token: decay = 0.9999 (a 10k-token memory) would lose
-// about 1.3e-3 per token instead of 1e-4. The two matmuls that read the state (k . sd and
-// q . S_new) take separate copies (sd_mm, S_mm), so their operand truncation happens once per
-// read and is not fed back into the state.
+// (UnpackToDestFp32, set in the program factory); the decay is an SFPU fp32 multiply and the
+// rank-1 update an SFPU fp32 add. A truncation there would compound every token: decay = 0.9999
+// (a 10k-token memory) would lose about 1.3e-3 per token instead of 1e-4. The two matmuls that
+// read the state (k . sd and q . S_new) take separate copies (sd_mm, S_mm), so their operand
+// truncation happens once per read and is not fed back into the state.
 
 #include <cstdint>
 #include "api/compute/common.h"
 #include "api/compute/matmul.h"
 #include "api/compute/eltwise_binary.h"
+#include "api/compute/eltwise_binary_sfpu.h"
 #include "api/compute/tile_move_copy.h"
 #include "api/compute/transpose.h"
 #include "api/compute/sfpu_binary_bcast.h"
@@ -63,13 +64,16 @@ void mm(uint32_t a, uint32_t b, uint32_t o, uint32_t Mt, uint32_t Kt, uint32_t N
     cb_o.push_back(Mt * Nt);
 }
 
-// S_new[Kt,Vt] = sd + kcol[Kt,1] (x) u[1,Vt]. Each DST tile is seeded with sd and the rank-1
-// matmul accumulates onto it, so the outer product never round-trips through L1. The result goes
-// to o (the carried state), to o_mm (the copy the output matmul reads) and, when emit_state, to
-// the state output.
+// S_new[Kt,Vt] = sd + kcol[Kt,1] (x) u[1,Vt], without the outer product round-tripping through
+// L1. Per DST batch: the rank-1 matmul writes into DST[0..nn), sd is unpacked straight to the
+// fp32 DST[nn..2nn), and an SFPU add sums them in fp32. The FPU does not accumulate onto the fp32
+// sd: on a Wormhole N150 that add came out off by a power of two (-2^(e+4), e the exponent of sd)
+// in the cases seen, all where sd and the update nearly cancel. The result goes to o (the carried
+// state), to o_mm (the copy the output matmul reads) and, when emit_state, to the state output.
 template <uint32_t Kt, uint32_t Vt>
 void rank1_update(uint32_t sd, uint32_t kcol, uint32_t u, uint32_t o, uint32_t o_mm, bool emit_state) {
     constexpr uint32_t kv = Kt * Vt;
+    constexpr uint32_t per_batch = DST_TILES / 2;  // an update tile and its sd tile each
     CircularBuffer cb_o(o);
     CircularBuffer cb_o_mm(o_mm);
     CircularBuffer cb_st(cb_state);
@@ -79,16 +83,20 @@ void rank1_update(uint32_t sd, uint32_t kcol, uint32_t u, uint32_t o, uint32_t o
         cb_st.reserve_back(kv);
     }
     for (uint32_t mi = 0; mi < Kt; mi++) {
-        for (uint32_t n0 = 0; n0 < Vt; n0 += DST_TILES) {
-            const uint32_t nn = (Vt - n0 < DST_TILES) ? (Vt - n0) : DST_TILES;
+        for (uint32_t n0 = 0; n0 < Vt; n0 += per_batch) {
+            const uint32_t nn = (Vt - n0 < per_batch) ? (Vt - n0) : per_batch;
             tile_regs_acquire();
-            copy_init(sd);
-            for (uint32_t j = 0; j < nn; j++) {
-                copy_tile(sd, mi * Vt + n0 + j, j);
-            }
             matmul_init(kcol, u, 0);
             for (uint32_t j = 0; j < nn; j++) {
                 matmul_tiles(kcol, u, mi, n0 + j, j);
+            }
+            copy_init(sd);
+            for (uint32_t j = 0; j < nn; j++) {
+                copy_tile(sd, mi * Vt + n0 + j, nn + j);
+            }
+            add_binary_tile_init();
+            for (uint32_t j = 0; j < nn; j++) {
+                add_binary_tile(j, nn + j, j);
             }
             tile_regs_commit();
             tile_regs_wait();

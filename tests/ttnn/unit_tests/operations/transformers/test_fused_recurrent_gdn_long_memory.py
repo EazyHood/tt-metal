@@ -7,8 +7,10 @@
 The state is decayed and updated on every token, so any rounding in that path compounds. These cases use gates close
 to 1 (the long-memory channels, which are where a GDN layer keeps context) and enough tokens for a per-token bias of
 ~1e-3 to show, while a single read's operand rounding in the q . S and k . S matmuls (~1e-3, not compounded) stays
-under the thresholds.
+under the thresholds. The last test checks the update itself where it nearly cancels the decayed state.
 """
+
+import zlib
 
 import pytest
 import torch
@@ -76,3 +78,32 @@ def test_chained_single_token_decode_tracks_the_reference(device, H, HV):
         output_final_state=True,
     )
     assert _rel(state, expected) < 1e-2
+
+
+@pytest.mark.parametrize(
+    "key, B, T, H, HV, row, tokens",
+    [("qwen27b_tp4-4-8", 4, 8, 4, 12, 2, 2), ("qwen35b_a3b_tp4-1-12", 1, 12, 4, 8, 0, 3)],
+    ids=["qwen27b_tp4", "qwen35b_a3b_tp4"],
+)
+def test_update_that_cancels_the_decayed_state(device, key, B, T, H, HV, row, tokens):
+    """S_new = sd + k (x) u where the two nearly cancel. make_inputs with these seeds (one batch row, the first
+    tokens) holds such an element in the last token; an FPU accumulation of k (x) u onto the fp32 sd came out off by a
+    power of two there (0.34 and 0.19 of max |S| on a Wormhole N150). Elsewhere the error is about 2e-3."""
+    x = make_inputs(B, T, H, HV, K, V, seed=zlib.crc32(key.encode()))
+    q, k, v, g, beta = (x[n][row : row + 1, :tokens] for n in ("q", "k", "v", "g", "beta"))
+    s0 = x["initial_state"][row : row + 1]
+
+    _, state = _run_op(device, q, k, v, g, beta, s0)
+
+    groups = HV // H
+    _, expected = fla_naive_recurrent_gated_delta_rule(
+        q.repeat_interleave(groups, dim=2),
+        k.repeat_interleave(groups, dim=2),
+        v,
+        beta,
+        g,
+        initial_state=s0,
+        output_final_state=True,
+    )
+    err = (state.double() - expected.double()).abs().max() / expected.double().abs().max()
+    assert err < 1e-2
