@@ -109,7 +109,7 @@ std::tuple<ttnn::Tensor, std::optional<ttnn::Tensor>> fused_recurrent_gated_delt
         v = reshape_rm(v, ttnn::Shape({BH * T, 1, V}));
     }
     // decay/beta come from headvec_split as [BH,T] (BH packed in tile-rows); they always need the
-    // relayout to per-scalar tiles [BH*T,1,1] so bcast_scalar reads element [0,0]. They are tiny.
+    // relayout to per-scalar tiles [BH*T,1,1] so the kernels find each scalar at element [0,0]. They are tiny.
     decay = reshape_rm(decay, ttnn::Shape({BH * T, 1, 1}));
     beta = reshape_rm(beta, ttnn::Shape({BH * T, 1, 1}));
 

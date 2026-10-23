@@ -41,6 +41,8 @@ constexpr uint32_t sd = tt::CBIndex::c_10;        // [K,V]  decayed state (S*dec
 constexpr uint32_t vread = tt::CBIndex::c_11;     // [1,V]  k . S'
 constexpr uint32_t u = tt::CBIndex::c_12;         // [1,V]  beta*(v - vread)
 constexpr uint32_t kcol = tt::CBIndex::c_13;      // [K,1]  transpose(k)
+constexpr uint32_t sd_mm = tt::CBIndex::c_14;     // [K,V]  copy of sd read by the k . sd matmul
+constexpr uint32_t S_mm = tt::CBIndex::c_15;      // [K,V]  copy of S_new read by the q . S_new matmul
 constexpr uint32_t blkidx = tt::CBIndex::c_16;    // [BH]   uint32 scratch, ring mode only
 }  // namespace cb
 
@@ -99,6 +101,8 @@ tt::tt_metal::ProgramDescriptor FusedRecurrentGatedDeltaRuleProgramFactory::crea
     add_cb(cb::vread, Vt);
     add_cb(cb::u, Vt);
     add_cb(cb::kcol, Kt);
+    add_cb(cb::sd_mm, kv);
+    add_cb(cb::S_mm, kv);
     if (ring) {
         const tt::DataFormat idx_fmt = datatype_to_dataformat_converter(in.initial_state_block_idx->dtype());
         desc.cbs.push_back(CBDescriptor{
@@ -150,10 +154,20 @@ tt::tt_metal::ProgramDescriptor FusedRecurrentGatedDeltaRuleProgramFactory::crea
     // Honor the caller's compute config (the public wrapper defaults it to HiFi4 / fp32 acc / exact).
     auto [math_fidelity, math_approx_mode, fp32_dest_acc_en, packer_l1_acc, dst_full_sync_en] =
         get_compute_kernel_config_args(device->arch(), attrs.compute_kernel_config);
+    // The carried state, decay and beta only ever reach Dest through copy_tile. Unpacking them
+    // straight to the fp32 Dest keeps all 32 bits; through srcA they would keep 19, and the state
+    // would be truncated again on every token. The matmuls read the separate sd_mm / S_mm copies.
+    std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
+    if (fp32_dest_acc_en) {
+        for (uint32_t idx : {cb::decay, cb::beta, cb::S, cb::s2, cb::s3, cb::sd}) {
+            unpack_to_dest_mode[idx] = UnpackToDestMode::UnpackToDestFp32;
+        }
+    }
     compute.config = ComputeConfigDescriptor{
         .math_fidelity = math_fidelity,
         .fp32_dest_acc_en = fp32_dest_acc_en,
         .dst_full_sync_en = dst_full_sync_en,
+        .unpack_to_dest_mode = std::move(unpack_to_dest_mode),
         .math_approx_mode = math_approx_mode};
     compute.runtime_args.reserve(BH);
 

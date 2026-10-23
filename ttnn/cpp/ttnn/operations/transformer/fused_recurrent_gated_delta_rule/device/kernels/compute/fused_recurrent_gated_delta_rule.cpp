@@ -15,12 +15,19 @@
 //
 // Per-token tiles are [1, D] (token in row 0, rows 1..31 host-zero-padded), so the outer-product
 // update k^T (x) u is a matmul with inner dim 1 whose 31 padding lanes are zero and vanish.
+//
+// Precision: the carried state never goes through srcA/srcB, which keep 19 bits of an fp32
+// operand. The state CBs (S, s2, s3, sd), decay and beta are unpacked straight to the fp32 Dest
+// (UnpackToDestFp32, set in the program factory) and the decay is an SFPU fp32 multiply. A
+// truncation there would compound every token: decay = 0.9999 (a 10k-token memory) would lose
+// about 1.3e-3 per token instead of 1e-4. The two matmuls that read the state (k . sd and
+// q . S_new) take separate copies (sd_mm, S_mm), so their operand truncation happens once per
+// read and is not fed back into the state.
 
 #include <cstdint>
 #include "api/compute/common.h"
 #include "api/compute/matmul.h"
 #include "api/compute/eltwise_binary.h"
-#include "api/compute/bcast.h"
 #include "api/compute/tile_move_copy.h"
 #include "api/compute/transpose.h"
 #include "api/compute/sfpu_binary_bcast.h"
@@ -30,7 +37,7 @@ namespace {
 
 constexpr uint32_t cb_q = 0, cb_k = 1, cb_v = 2, cb_decay = 3, cb_beta = 4, cb_S = 5;
 constexpr uint32_t cb_out = 6, cb_state = 7, cb_s2 = 8, cb_s3 = 9, cb_sd = 10;
-constexpr uint32_t cb_vread = 11, cb_u = 12, cb_kcol = 13;
+constexpr uint32_t cb_vread = 11, cb_u = 12, cb_kcol = 13, cb_sd_mm = 14, cb_S_mm = 15;
 
 // fp32 DST tiles available per tile_regs_acquire (half-sync).
 constexpr uint32_t DST_TILES = 4;
@@ -57,14 +64,17 @@ void mm(uint32_t a, uint32_t b, uint32_t o, uint32_t Mt, uint32_t Kt, uint32_t N
 }
 
 // S_new[Kt,Vt] = sd + kcol[Kt,1] (x) u[1,Vt]. Each DST tile is seeded with sd and the rank-1
-// matmul accumulates onto it, so the outer product never round-trips through L1. When
-// emit_state, the same DST tiles are also packed as the state output.
+// matmul accumulates onto it, so the outer product never round-trips through L1. The result goes
+// to o (the carried state), to o_mm (the copy the output matmul reads) and, when emit_state, to
+// the state output.
 template <uint32_t Kt, uint32_t Vt>
-void rank1_update(uint32_t sd, uint32_t kcol, uint32_t u, uint32_t o, bool emit_state) {
+void rank1_update(uint32_t sd, uint32_t kcol, uint32_t u, uint32_t o, uint32_t o_mm, bool emit_state) {
     constexpr uint32_t kv = Kt * Vt;
     CircularBuffer cb_o(o);
+    CircularBuffer cb_o_mm(o_mm);
     CircularBuffer cb_st(cb_state);
     cb_o.reserve_back(kv);
+    cb_o_mm.reserve_back(kv);
     if (emit_state) {
         cb_st.reserve_back(kv);
     }
@@ -84,6 +94,7 @@ void rank1_update(uint32_t sd, uint32_t kcol, uint32_t u, uint32_t o, bool emit_
             tile_regs_wait();
             for (uint32_t j = 0; j < nn; j++) {
                 pack_tile<true>(j, o, mi * Vt + n0 + j);
+                pack_tile<true>(j, o_mm, mi * Vt + n0 + j);
                 if (emit_state) {
                     pack_tile<true>(j, cb_state, mi * Vt + n0 + j);
                 }
@@ -92,6 +103,7 @@ void rank1_update(uint32_t sd, uint32_t kcol, uint32_t u, uint32_t o, bool emit_
         }
     }
     cb_o.push_back(kv);
+    cb_o_mm.push_back(kv);
     if (emit_state) {
         cb_st.push_back(kv);
     }
@@ -128,20 +140,39 @@ void delta_rule_residual(uint32_t a, uint32_t b, uint32_t beta, uint32_t o, uint
     cb_o.push_back(n);
 }
 
-// out = A * scalar, n tiles. scalar is the [0,0] element of the single `scal` tile.
-void bcast_scalar_mul(uint32_t a, uint32_t scal, uint32_t o, uint32_t n) {
+// out = S * decay, n tiles, in fp32: S and the decay tile are unpacked straight to Dest and the
+// multiply is an SFPU column broadcast, the same construction as delta_rule_residual. The reader
+// copies decay from [0,0] down column 0, so every row of S sees it. The result goes to o (carried
+// on into the rank-1 update) and to o_mm (the copy the k . sd matmul reads).
+void decay_state(uint32_t s, uint32_t decay, uint32_t o, uint32_t o_mm, uint32_t n) {
+    constexpr uint32_t per_batch = DST_TILES - 1;  // the last DST slot holds decay
     CircularBuffer cb_o(o);
+    CircularBuffer cb_o_mm(o_mm);
     cb_o.reserve_back(n);
-    mul_bcast_scalar_init(a, scal);
-    for (uint32_t i = 0; i < n; i++) {
+    cb_o_mm.reserve_back(n);
+    for (uint32_t i0 = 0; i0 < n; i0 += per_batch) {
+        const uint32_t nn = (n - i0 < per_batch) ? (n - i0) : per_batch;
         tile_regs_acquire();
-        mul_tiles_bcast_scalar(a, scal, i, 0, 0);
+        copy_init(s);
+        for (uint32_t j = 0; j < nn; j++) {
+            copy_tile(s, i0 + j, j);
+        }
+        copy_init(decay);
+        copy_tile(decay, 0, nn);
+        sfpu_mul_bcast_col_init();
+        for (uint32_t j = 0; j < nn; j++) {
+            sfpu_mul_bcast_col(j, nn);
+        }
         tile_regs_commit();
         tile_regs_wait();
-        pack_tile(0, o, i);
+        for (uint32_t j = 0; j < nn; j++) {
+            pack_tile<true>(j, o, i0 + j);
+            pack_tile<true>(j, o_mm, i0 + j);
+        }
         tile_regs_release();
     }
     cb_o.push_back(n);
+    cb_o_mm.push_back(n);
 }
 
 // out[Kt,1] = transpose of in[1,Kt]: transpose each of the Kt tiles. (in must be available.)
@@ -175,7 +206,7 @@ void kernel_main() {
     compute_kernel_hw_startup(cb_q, cb_v, cb_out);
 
     CircularBuffer q(cb_q), k(cb_k), v(cb_v), decay(cb_decay), beta(cb_beta);
-    CircularBuffer sd(cb_sd), vread(cb_vread), u(cb_u), kcol(cb_kcol);
+    CircularBuffer sd(cb_sd), sd_mm(cb_sd_mm), S_mm(cb_S_mm), vread(cb_vread), u(cb_u), kcol(cb_kcol);
 
     for (uint32_t t = 0; t < T; t++) {
         const uint32_t cur_S_id = (t == 0) ? cb_S : ((t & 1u) ? cb_s2 : cb_s3);
@@ -186,14 +217,16 @@ void kernel_main() {
         // sd = cur_S * decay  (decay before read)
         decay.wait_front(1);
         cur_S.wait_front(kv);
-        bcast_scalar_mul(cur_S_id, cb_decay, cb_sd, kv);
+        decay_state(cur_S_id, cb_decay, cb_sd, cb_sd_mm, kv);
         decay.pop_front(1);
         cur_S.pop_front(kv);
         sd.wait_front(kv);
+        sd_mm.wait_front(kv);
 
         // vread = k . sd  ([1,V])
         k.wait_front(Kt);
-        mm(cb_k, cb_sd, cb_vread, 1, Kt, Vt, false);
+        mm(cb_k, cb_sd_mm, cb_vread, 1, Kt, Vt, false);
+        sd_mm.pop_front(kv);
         vread.wait_front(Vt);
 
         // u = beta * (v - vread)
@@ -210,17 +243,19 @@ void kernel_main() {
         k.pop_front(Kt);
         kcol.wait_front(Kt);
 
-        // S_new = sd + kcol (x) u -> nxt_S (and the state output, per token or last)
-        rank1_update<Kt, Vt>(cb_sd, cb_kcol, cb_u, nxt_S_id, per_token || last);
+        // S_new = sd + kcol (x) u -> nxt_S and S_mm (and the state output, per token or last)
+        rank1_update<Kt, Vt>(cb_sd, cb_kcol, cb_u, nxt_S_id, cb_S_mm, per_token || last);
         kcol.pop_front(Kt);
         u.pop_front(Vt);
         sd.pop_front(kv);
         nxt_S.wait_front(kv);
+        S_mm.wait_front(kv);
 
         // o = q . S_new  (read from POST-update state)
         q.wait_front(Kt);
-        mm(cb_q, nxt_S_id, cb_out, 1, Kt, Vt, false);
+        mm(cb_q, cb_S_mm, cb_out, 1, Kt, Vt, false);
         q.pop_front(Kt);
+        S_mm.pop_front(kv);
 
         // nxt_S is intentionally NOT popped: the next iteration reads it as cur_S.
     }

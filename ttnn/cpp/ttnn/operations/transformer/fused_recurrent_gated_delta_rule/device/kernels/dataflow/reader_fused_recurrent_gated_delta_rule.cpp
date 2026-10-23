@@ -4,6 +4,8 @@
 // Reader: initial state S [K,V] once (from s0 or host-provided zeros), then per token
 // q,k [1,K], v [1,V], decay,beta [1,1]. All fp32. Device 2.0 API.
 // Per-token layout: q/k/v are [BH*T, 1, D] and decay/beta [BH*T, 1, 1]; block index = h*T + t.
+// The decay tile leaves with its [0,0] value copied down column 0: the compute kernel decays the
+// state with an SFPU column broadcast, which reads one value per row.
 
 #include "api/dataflow/dataflow_api.h"
 #include "api/dataflow/noc.h"
@@ -59,6 +61,24 @@ void kernel_main() {
         cb.push_back(n);
     };
 
+    // One [1,1] tile whose [0,0] value is then copied to rows 1..31 of column 0 (face 0 rows 1..15,
+    // face 2 rows 0..15; 16x16 faces, row-major, fp32).
+    auto read_into_col0 = [&](const auto& acc, uint32_t cb_id, uint32_t page) {
+        CircularBuffer cb(cb_id);
+        cb.reserve_back(1);
+        noc.async_read(acc, cb, tb, {.page_id = page}, {.offset_bytes = 0});
+        noc.async_read_barrier();
+        volatile tt_l1_ptr uint32_t* p = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(cb.get_write_ptr());
+        const uint32_t x = p[0];
+        for (uint32_t r = 1; r < 16; r++) {
+            p[r * 16] = x;
+        }
+        for (uint32_t r = 0; r < 16; r++) {
+            p[512 + r * 16] = x;
+        }
+        cb.push_back(1);
+    };
+
     // initial state S (once) — host always provides it (zeros if absent). In ring mode the block
     // is idx[h] instead of h (caller contract: see the Python binding).
     uint32_t s0_block = h;
@@ -82,7 +102,7 @@ void kernel_main() {
         read_into(q_acc, cb_q, block * Kt, Kt);
         read_into(k_acc, cb_k, block * Kt, Kt);
         read_into(v_acc, cb_v, block * Vt, Vt);
-        read_into(d_acc, cb_decay, block, 1);
+        read_into_col0(d_acc, cb_decay, block);
         read_into(b_acc, cb_beta, block, 1);
     }
 }
