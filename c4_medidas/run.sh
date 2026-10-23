@@ -11,6 +11,8 @@ cd ~
 
 unset VIRTUAL_ENV PYTHONPATH TT_METAL_RUNTIME_ROOT
 export PYENV_VERSION=system LD_LIBRARY_PATH=/usr/local/lib:/usr/lib
+# Shared instance: leave cores for the others' host timings (C8, 23-oct). C4_JOBS overrides.
+export CMAKE_BUILD_PARALLEL_LEVEL=${C4_JOBS:-32}
 export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v python_env | paste -sd:)
 
 echo "inicio $(date -u)"
@@ -31,7 +33,7 @@ build() {  # $1 = tree, $2 = label
   git submodule update --init --recursive > $W/sub-$2.log 2>&1 || { echo "ALTO: submodulos $2"; tail -20 $W/sub-$2.log; return 1; }
   echo "== $2: compilando $(date -u)"
   export TT_METAL_HOME=$1
-  ./build_metal.sh > $W/build-$2.log 2>&1 || { echo "ALTO: compilacion $2"; tail -40 $W/build-$2.log; return 3; }
+  nice -n 19 ./build_metal.sh > $W/build-$2.log 2>&1 || { echo "ALTO: compilacion $2"; tail -40 $W/build-$2.log; return 3; }
   echo "== $2: python_env $(date -u)"
   PYTHON_ENV_DIR=$1/python_env ./create_venv.sh > $W/venv-$2.log 2>&1 || { echo "ALTO: venv $2"; tail -40 $W/venv-$2.log; return 4; }
   echo "== $2: listo $(date -u)"
