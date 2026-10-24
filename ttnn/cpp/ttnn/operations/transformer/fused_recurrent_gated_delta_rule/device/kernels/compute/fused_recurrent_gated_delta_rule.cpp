@@ -18,11 +18,14 @@
 //
 // Precision: the carried state never goes through srcA/srcB, which keep 19 bits of an fp32
 // operand. The state CBs (S, s2, s3, sd), decay and beta are unpacked straight to the fp32 Dest
-// (UnpackToDestFp32, set in the program factory); the decay is an SFPU fp32 multiply and the
-// rank-1 update an SFPU fp32 add. A truncation there would compound every token: decay = 0.9999
-// (a 10k-token memory) would lose about 1.3e-3 per token instead of 1e-4. The two matmuls that
-// read the state (k . sd and q . S_new) take separate copies (sd_mm, S_mm), so their operand
-// truncation happens once per read and is not fed back into the state.
+// (UnpackToDestFp32, set in the program factory); the decay is an SFPU fp32 multiply, and the
+// rank-1 term k (x) u, still a matmul, is added with an SFPU fp32 add. A truncation there would
+// compound every token: decay = 0.9999 (a 10k-token memory) would lose about 1.3e-3 per token
+// instead of 1e-4. The two matmuls that read the state (k . sd and q . S_new) read copies
+// (sd_mm, S_mm): a CB unpacked straight to Dest cannot feed srcA/srcB
+// (tech_reports/op_kernel_dev/accuracy_tips, "Accumulation Precision"). Their operands are
+// still truncated to 19 bits on each read, as on main. Through u, that error reaches the state
+// once per token, but it does not compound: the carried state itself keeps all 32 bits.
 
 #include <cstdint>
 #include "api/compute/common.h"
@@ -67,9 +70,10 @@ void mm(uint32_t a, uint32_t b, uint32_t o, uint32_t Mt, uint32_t Kt, uint32_t N
 // S_new[Kt,Vt] = sd + kcol[Kt,1] (x) u[1,Vt], without the outer product round-tripping through
 // L1. Per DST batch: the rank-1 matmul writes into DST[0..nn), sd is unpacked straight to the
 // fp32 DST[nn..2nn), and an SFPU add sums them in fp32. The FPU does not accumulate onto the fp32
-// sd: on a Wormhole N150 that add came out off by a power of two (-2^(e+4), e the exponent of sd)
-// in the cases seen, all where sd and the update nearly cancel. The result goes to o (the carried
-// state), to o_mm (the copy the output matmul reads) and, when emit_state, to the state output.
+// sd: on a Wormhole N150 that add came out off by a power of two (-2^(e+4), e the exponent of
+// both sd and the update) in the cases seen, all where the two nearly cancel. The result goes to
+// o (the carried state), to o_mm (the copy the output matmul reads) and, when emit_state, to
+// the state output.
 template <uint32_t Kt, uint32_t Vt>
 void rank1_update(uint32_t sd, uint32_t kcol, uint32_t u, uint32_t o, uint32_t o_mm, bool emit_state) {
     constexpr uint32_t kv = Kt * Vt;

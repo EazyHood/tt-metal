@@ -156,7 +156,8 @@ tt::tt_metal::ProgramDescriptor FusedRecurrentGatedDeltaRuleProgramFactory::crea
         get_compute_kernel_config_args(device->arch(), attrs.compute_kernel_config);
     // The carried state, decay and beta only ever reach Dest through copy_tile. Unpacking them
     // straight to the fp32 Dest keeps all 32 bits; through srcA they would keep 19, and the state
-    // would be truncated again on every token. The matmuls read the separate sd_mm / S_mm copies.
+    // would be truncated again on every token. The matmuls read the separate sd_mm / S_mm copies,
+    // because a CB unpacked straight to Dest cannot feed srcA/srcB.
     std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
     if (fp32_dest_acc_en) {
         for (uint32_t idx : {cb::decay, cb::beta, cb::S, cb::s2, cb::s3, cb::sd}) {
