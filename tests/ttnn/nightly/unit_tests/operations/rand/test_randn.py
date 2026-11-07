@@ -2,6 +2,8 @@
 
 # SPDX-License-Identifier: Apache-2.0
 
+import math
+
 import pytest
 import ttnn
 import torch
@@ -251,3 +253,48 @@ def test_randn_same_seed_is_reproducible(device):
     a = ttnn.to_torch(ttnn.randn((256, 256), device=device, dtype=ttnn.bfloat16, seed=1234))
     b = ttnn.to_torch(ttnn.randn((256, 256), device=device, dtype=ttnn.bfloat16, seed=1234))
     assert torch.equal(a, b), "randn with the same explicit seed must be reproducible"
+
+
+@pytest.mark.parametrize("dtype", [ttnn.bfloat16, ttnn.float32])
+def test_randn_default_compute_config_is_accurate(device, dtype):
+    """randn without a compute_kernel_config must give the same values as with math_approx_mode=False.
+
+    In approximate mode sqrt_tile is only good to about 10 bits, which moves the Box-Muller radius of every pair.
+    """
+    accurate_config = ttnn.init_device_compute_kernel_config(
+        device.arch(), math_fidelity=ttnn.MathFidelity.HiFi4, math_approx_mode=False
+    )
+    default = ttnn.to_torch(ttnn.randn((256, 256), device=device, dtype=dtype, seed=1234))
+    accurate = ttnn.to_torch(
+        ttnn.randn((256, 256), device=device, dtype=dtype, seed=1234, compute_kernel_config=accurate_config)
+    )
+    assert torch.equal(default, accurate), "randn without a compute_kernel_config must match math_approx_mode=False"
+
+
+def test_randn_float32_box_muller_radius(device):
+    """The radius of each Box-Muller pair must follow its exact distribution.
+
+    randn draws U1 and U2, and writes Z1 = R cos(2 pi U2) and Z2 = R sin(2 pi U2), with R = sqrt(-2 ln U1), to two
+    consecutive tiles on the same core. exp(-(Z1^2 + Z2^2) / 2) gives back U1, which must be uniform on (0, 1).
+    A square root good to about 10 bits (math_approx_mode=True) leaves ripples in that histogram, which a chi-squared
+    test over 2**20 pairs picks up.
+    """
+    grid = device.compute_with_storage_grid_size()
+    num_cores = grid.x * grid.y
+    # An even number of tiles on every core keeps tiles 2i and 2i + 1 on the same pairs; at least 2**20 pairs in total.
+    tiles_per_core = 2 * math.ceil(1024 / num_cores)
+    shape = (tiles_per_core * num_cores * 32, 32)
+
+    z = ttnn.to_torch(ttnn.randn(shape, device=device, dtype=ttnn.float32, seed=1234)).double()
+    z = z.reshape(-1, 2, 32, 32)
+    # Uniform for any two independent standard normals, so a different pairing cannot make this check fail.
+    u1 = torch.exp(-(z[:, 0] ** 2 + z[:, 1] ** 2) / 2).flatten()
+
+    bins = 100
+    counts = torch.bincount((u1 * bins).long().clamp(max=bins - 1), minlength=bins).double()
+    expected = u1.numel() / bins
+    chi2 = ((counts - expected) ** 2 / expected).sum()
+    # Chi-squared survival function with bins - 1 degrees of freedom.
+    p_value = torch.special.gammaincc(torch.tensor((bins - 1) / 2, dtype=torch.float64), chi2 / 2).item()
+    logger.info(f"{u1.numel()} pairs: chi2={chi2.item():.1f} with {bins - 1} degrees of freedom, p={p_value:.2e}")
+    assert p_value > 1e-6, f"exp(-(Z1^2 + Z2^2) / 2) is not uniform: chi2={chi2.item():.1f}, p={p_value:.2e}"

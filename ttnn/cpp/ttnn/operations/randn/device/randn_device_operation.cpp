@@ -63,6 +63,9 @@ ttnn::operations::randn::RandnDeviceOperation::tensor_return_value_t randn(
     const std::optional<DeviceComputeKernelConfig>& compute_kernel_config,
     std::optional<uint32_t> seed) {
     using OperationType = ttnn::operations::randn::RandnDeviceOperation;
+    // Accurate SFPU math by default: in approximate mode sqrt_tile is only good to about 10 bits, and the
+    // Box-Muller radius sqrt(-2 ln U1) inherits that error. A compute_kernel_config from the caller is used as is.
+    constexpr bool approx_mode = false;
     return ttnn::device_operation::launch<OperationType>(
         OperationType::operation_attributes_t{
             shape,
@@ -70,7 +73,8 @@ ttnn::operations::randn::RandnDeviceOperation::tensor_return_value_t randn(
             layout,
             memory_config,
             std::addressof(device),
-            init_device_compute_kernel_config(device.arch(), compute_kernel_config, tt::tt_metal::MathFidelity::HiFi4),
+            init_device_compute_kernel_config(
+                device.arch(), compute_kernel_config, tt::tt_metal::MathFidelity::HiFi4, approx_mode),
             seed},
         OperationType::tensor_args_t{});
 }
